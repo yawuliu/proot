@@ -37,6 +37,7 @@ typedef unsigned char byte_t;
 
 #define OFFSETOF_STATX_UID 20
 #define OFFSETOF_STATX_GID 24
+#define OFFSETOF_STATX_MODE 12
 
 #if !defined(ARCH_X86_64) && !defined(ARCH_ARM_EABI) && !defined(ARCH_X86) && !defined(ARCH_SH4)
 #    if defined(__x86_64__)
@@ -80,6 +81,7 @@ typedef unsigned char byte_t;
     #define RED_ZONE_SIZE 128
     #define OFFSETOF_STAT_UID_32 24
     #define OFFSETOF_STAT_GID_32 28
+    #define OFFSETOF_STAT_MODE_32 16
 
     #define LOADER_ADDRESS 0x600000000000
     #define HAS_LOADER_32BIT true

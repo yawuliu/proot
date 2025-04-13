@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Launch Remote",
+        "type": "cppdbg", // Or 'gdb' for GNU Debugger
+        "request": "launch",
+        "program": "${workspaceFolder}/src/proot", // Replace with your executable path
+        "cwd": "${workspaceFolder}/build", // Working directory on the remote machine
+        "linux": {
+          "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/", 
+          "-b", "${workspaceFolder}/build/test.sh:/test.sh",
+          "-s", "${workspaceFolder}/build/fake.db",
+           "-q", "/usr/bin/qemu-aarch64-static", "/test.sh"]//'touch /test&&chown liuyawu:liuyawu /test'
+        },
+        "preLaunchTask": "build", // Optional: Name of a build task in tasks.json
+        "stopAtEntry": false,
+        "internalConsoleOptions": "openOnSessionStart",
+        "MIMode": "gdb", // Or 'lldb' if you are using LLDB
+        "args": []
+      }
+    ]
+  }

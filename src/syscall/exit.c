@@ -42,6 +42,132 @@
 #include "extension/extension.h"
 #include "arch.h"
 
+// char* resovle_path(Tracee *tracee, word_t sysnum) {
+// 	char *path = NULL;
+// 	if (sysnum == PR_fchownat || sysnum == PR_fstatat64 || sysnum == PR_newfstatat || sysnum == PR_statx) {
+// 		Reg dirfd_sysarg;
+// 		Reg pathname_sysarg;
+// 		dirfd_sysarg = SYSARG_1;
+// 		pathname_sysarg = SYSARG_2;
+// 		int dirfd = peek_reg(tracee, ORIGINAL, dirfd_sysarg);
+// 		char rel_path[PATH_MAX];
+// 		int status = get_sysarg_path(tracee, rel_path, pathname_sysarg);
+// 		if (status < 0) {
+// 			return NULL;
+// 		}
+// 		if (dirfd == AT_FDCWD) {
+// 			path = strdup(rel_path);
+// 		}else {
+// 			// 获取 dirfd 对应的目录路径
+// 			char dir_path[PATH_MAX];
+// 			snprintf(dir_path, sizeof(dir_path), "/proc/self/fd/%d", dirfd);
+			
+// 			char *dir_real_path = (char *)malloc(PATH_MAX);
+// 			if (readlink(dir_path, dir_real_path, PATH_MAX) == -1) {
+// 				perror("readlink");
+// 				free(dir_real_path);
+// 				dir_real_path = NULL;
+// 			} else {
+// 				dir_real_path[PATH_MAX - 1] = '\0';
+// 			}
+			
+// 			if (dir_real_path) {
+// 				// 拼接目录路径和相对路径
+// 				path = (char *)malloc(PATH_MAX);
+// 				snprintf(path, PATH_MAX, "%s/%s", dir_real_path, rel_path);
+// 				free(dir_real_path);
+// 			}
+// 		}
+// 	}else if (sysnum == PR_fchown || sysnum == PR_fchown32 || sysnum == PR_fstat || sysnum == PR_fstat64) {
+// 		Reg fd_sysarg;
+// 		fd_sysarg = SYSARG_1;
+// 		int fd = peek_reg(tracee, ORIGINAL, fd_sysarg);
+// 		char proc_path[PATH_MAX];
+//         snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        
+//         // 使用 readlink 获取文件路径
+//         path = (char *)malloc(PATH_MAX);
+//         if (readlink(proc_path, path, PATH_MAX) == -1) {
+//             perror("readlink");
+//             free(path);
+//             path = NULL;
+//         } else {
+//             // 确保路径以 null 结尾
+//             path[PATH_MAX - 1] = '\0';
+//         }
+// 	} else if(sysnum == PR_lchown || sysnum == PR_lchown32 || sysnum == PR_chown || sysnum == PR_chown32 ||
+// 		sysnum == PR_stat || sysnum == PR_lstat || sysnum == PR_stat64 || sysnum == PR_lstat64	) {
+// 		Reg path_sysarg;
+// 		path_sysarg = SYSARG_1;
+// 		char rel_path[PATH_MAX];
+// 		int status = get_sysarg_path(tracee, rel_path, path_sysarg);
+// 		if (status < 0) {
+// 			return NULL;
+// 		}
+// 		path = strdup(rel_path);
+// 	} 
+
+// 	return path;
+// }
+// void record_file_state(Tracee *tracee, word_t sysnum) 
+// {
+// 	switch (sysnum)
+// 	{
+// 		case PR_chown:
+// 		case PR_chown32:
+// 		case PR_lchown:
+// 		case PR_lchown32:
+// 		case PR_fchown:
+// 		case PR_fchown32:
+// 		case PR_fchownat: {
+// 			Reg uid_sysarg;
+// 			Reg gid_sysarg;
+// 			uid_t uid;
+// 			gid_t gid;
+// 			if (sysnum == PR_fchownat) {
+// 				uid_sysarg = SYSARG_3;
+// 				gid_sysarg = SYSARG_4;
+// 			}
+// 			else {
+// 				uid_sysarg = SYSARG_2;
+// 				gid_sysarg = SYSARG_3;
+// 			}
+	
+// 			uid = peek_reg(tracee, ORIGINAL, uid_sysarg);
+// 			gid = peek_reg(tracee, ORIGINAL, gid_sysarg);
+// 			char* pathname = resovle_path(tracee, sysnum);
+// 			char *root = get_binding(tracee, GUEST, "/");
+// 			if (pathname && strncmp(pathname, root, strlen(root)) == 0) {
+// 				struct fakestat fs{};
+// 				fprintf(stderr, "action_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname,uid, gid);
+// 			}
+// 			if (pathname) {
+// 				free(pathname);
+// 			}
+// 			break;
+// 		}
+// 	// case PR_fstatat64:
+// 	// case PR_newfstatat:
+// 	// case PR_stat64:
+// 	// case PR_lstat64:
+// 	// case PR_fstat64:
+// 	// case PR_stat:
+// 	// case PR_statx:
+// 	// case PR_lstat:
+// 	// case PR_fstat: {
+// 	// 	char *pathname = resovle_path(tracee, sysnum);
+// 	// 	if (pathname) {
+// 	// 		fprintf(stderr, "action_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname);
+// 	// 		free(pathname);
+// 	// 	}
+// 	// 	break;
+// 	// }
+// 	default:
+// 		break;
+// 	}
+
+// }
+
 /**
  * Translate the output arguments of the current @tracee's syscall in
  * the @tracee->pid process area. This function sets the result of
@@ -64,6 +190,7 @@ void translate_syscall_exit(Tracee *tracee)
 
 	/* Set the tracee's errno if an error occured previously during
 	 * the translation. */
+	int tracee_status = tracee->status;
 	if (tracee->status < 0) {
 		poke_reg(tracee, SYSARG_RESULT, (word_t) tracee->status);
 		goto end;
@@ -465,9 +592,12 @@ void translate_syscall_exit(Tracee *tracee)
 	}
 
 	poke_reg(tracee, SYSARG_RESULT, (word_t) status);
-
+	//if (status == 0)
+	//	record_file_state(tracee, syscall_number);;
 end:
 	status = notify_extensions(tracee, SYSCALL_EXIT_END, 0, 0);
 	if (status < 0)
 		poke_reg(tracee, SYSARG_RESULT, (word_t) status);
+	// if (tracee_status != 0  && status == 0)
+	// 	record_file_state(tracee, syscall_number);;
 }

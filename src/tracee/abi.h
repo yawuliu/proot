@@ -128,4 +128,12 @@ static inline off_t offsetof_stat_gid(const Tracee *tracee)
 		: offsetof(struct stat, st_gid));
 }
 
+
+static inline off_t offsetof_stat_mode(const Tracee *tracee)
+{
+	return (is_32on64_mode(tracee)
+		? OFFSETOF_STAT_MODE_32
+		: offsetof(struct stat, st_mode));
+}
+
 #endif /* TRACEE_ABI_H */

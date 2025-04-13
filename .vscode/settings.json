@@ -1,0 +1,18 @@
+{
+    "files.associations": {
+        "stdio.h": "c",
+        "sqlite3.h": "c",
+        "extension.h": "c",
+        "*.list": "c",
+        "typeinfo": "c",
+        "uthash.h": "c",
+        "stdint.h": "c",
+        "arch.h": "c",
+        "limits.h": "c",
+        "*.tcc": "c",
+        "deque": "c",
+        "string": "c",
+        "unordered_map": "c",
+        "vector": "c"
+    }
+}

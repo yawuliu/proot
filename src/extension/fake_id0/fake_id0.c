@@ -231,6 +231,75 @@ static void override_permissions(const Tracee *tracee, const char *path, bool is
 	return;
 }
 
+
+static char* resovle_path(Tracee *tracee, word_t sysnum) {
+	char *path = NULL;
+	if (sysnum == PR_fchownat || sysnum == PR_fstatat64 || sysnum == PR_newfstatat || sysnum == PR_statx || sysnum == PR_fchmodat) {
+		Reg dirfd_sysarg;
+		Reg pathname_sysarg;
+		dirfd_sysarg = SYSARG_1;
+		pathname_sysarg = SYSARG_2;
+		int dirfd = peek_reg(tracee, ORIGINAL, dirfd_sysarg);
+		char rel_path[PATH_MAX];
+		int status = get_sysarg_path(tracee, rel_path, pathname_sysarg);
+		if (status < 0) {
+			return NULL;
+		}
+		if (dirfd == AT_FDCWD) {
+			path = strdup(rel_path);
+		}else {
+			// 获取 dirfd 对应的目录路径
+			char dir_path[PATH_MAX];
+			snprintf(dir_path, sizeof(dir_path), "/proc/self/fd/%d", dirfd);
+			
+			char *dir_real_path = (char *)malloc(PATH_MAX);
+			if (readlink(dir_path, dir_real_path, PATH_MAX) == -1) {
+				perror("readlink");
+				free(dir_real_path);
+				dir_real_path = NULL;
+			} else {
+				dir_real_path[PATH_MAX - 1] = '\0';
+			}
+			
+			if (dir_real_path) {
+				// 拼接目录路径和相对路径
+				path = (char *)malloc(PATH_MAX);
+				snprintf(path, PATH_MAX, "%s/%s", dir_real_path, rel_path);
+				free(dir_real_path);
+			}
+		}
+	}else if (sysnum == PR_fchown || sysnum == PR_fchown32 || sysnum == PR_fstat || sysnum == PR_fstat64 || sysnum == PR_fchmod) {
+		Reg fd_sysarg;
+		fd_sysarg = SYSARG_1;
+		int fd = peek_reg(tracee, ORIGINAL, fd_sysarg);
+		char proc_path[PATH_MAX];
+        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        
+        // 使用 readlink 获取文件路径
+        path = (char *)malloc(PATH_MAX);
+        if (readlink(proc_path, path, PATH_MAX) == -1) {
+            perror("readlink");
+            free(path);
+            path = NULL;
+        } else {
+            // 确保路径以 null 结尾
+            path[PATH_MAX - 1] = '\0';
+        }
+	} else if(sysnum == PR_lchown || sysnum == PR_lchown32 || sysnum == PR_chown || sysnum == PR_chown32 ||
+		sysnum == PR_stat || sysnum == PR_lstat || sysnum == PR_stat64 || sysnum == PR_lstat64|| sysnum == PR_chmod	) {
+		Reg path_sysarg;
+		path_sysarg = SYSARG_1;
+		char rel_path[PATH_MAX];
+		int status = get_sysarg_path(tracee, rel_path, path_sysarg);
+		if (status < 0) {
+			return NULL;
+		}
+		path = strdup(rel_path);
+	} 
+
+	return path;
+}
+
 /**
  * Adjust current @tracee's syscall parameters according to @config.
  * This function always returns 0.
@@ -272,7 +341,6 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 		Reg gid_sysarg;
 		uid_t uid;
 		gid_t gid;
-
 		if (sysnum == PR_fchownat) {
 			uid_sysarg = SYSARG_3;
 			gid_sysarg = SYSARG_4;
@@ -291,7 +359,6 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 			poke_reg(tracee, uid_sysarg, getuid());
 		if (gid == config->rgid)
 			poke_reg(tracee, gid_sysarg, getgid());
-
 		return 0;
 	}
 
@@ -501,6 +568,7 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 	return 0;							\
 } while (0)
 
+
 /**
  * Adjust current @tracee's syscall result according to @config.  This
  * function returns -errno if an error occured, otherwise 0.
@@ -588,19 +656,114 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	case PR_capset:
 	case PR_setxattr:
 	case PR_lsetxattr:
-	case PR_fsetxattr:
+	case PR_fsetxattr: {
+		word_t result;
+		/* Override only permission errors.  */
+		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
+		if ((int) result != -EPERM)
+			return 0;
+
+		/* Force success if the tracee was supposed to have
+		* the capability.  */
+		if (config->euid == 0) /* TODO: || HAS_CAP(...) */
+			poke_reg(tracee, SYSARG_RESULT, 0);
+		return 0;
+	}
 	case PR_chmod:
-	case PR_chown:
 	case PR_fchmod:
+	case PR_fchmodat: {
+		word_t result;
+		///////////////////
+		if (tracee->status != 0 ) {
+			char* pathname = resovle_path(tracee, sysnum);
+			if (pathname ) {
+				char *root = get_binding(tracee, GUEST, "/");
+				if (strncmp(pathname, root, strlen(root)) == 0 ){
+					Reg mode_sysarg;
+					mode_t st_mode;
+					if (sysnum == PR_chmod || sysnum == PR_fchmod) {
+						mode_sysarg = SYSARG_2;
+					} else {
+						mode_sysarg = SYSARG_3;
+					}
+					st_mode = peek_reg(tracee, ORIGINAL, mode_sysarg);
+					struct fakestat fs = {.path={},.uid = -1,.gid = -1,.mode = -1};
+					strncpy(fs.path, pathname, strlen(pathname));
+					fs.mode = st_mode;
+					struct fakestat fs1;
+					if (0 == query_file_state(pathname, &fs1)) {
+						fs.uid = fs1.uid;
+						fs.gid = fs1.gid;
+					} else {
+						struct stat mode;
+						stat(pathname, &mode);
+						fs.uid = mode.st_uid;
+						fs.gid = mode.st_gid;
+					}		
+					if (0 == insert_or_update_file_state(&fs) ){
+						fprintf(stderr, "chmod_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname);
+					} else {
+						fprintf(stderr, "!chmod_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
+					}
+				}
+			}
+		}
+		/* Override only permission errors.  */
+		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
+		if ((int) result != -EPERM)
+			return 0;
+
+		/* Force success if the tracee was supposed to have
+		* the capability.  */
+		if (config->euid == 0) /* TODO: || HAS_CAP(...) */
+			poke_reg(tracee, SYSARG_RESULT, 0);
+		return 0;
+	}
+	case PR_chown:
 	case PR_fchown:
 	case PR_lchown:
 	case PR_chown32:
 	case PR_fchown32:
 	case PR_lchown32:
-	case PR_fchmodat:
 	case PR_fchownat: {
 		word_t result;
-
+        ///////////////////
+		if (tracee->status != 0 ) {
+			char* pathname = resovle_path(tracee, sysnum);
+			if (pathname ) {
+				char *root = get_binding(tracee, GUEST, "/");
+				if (strncmp(pathname, root, strlen(root)) == 0 ){
+					Reg uid_sysarg;
+					Reg gid_sysarg;
+					uid_t uid;
+					gid_t gid;
+					if (sysnum == PR_fchownat) {
+						uid_sysarg = SYSARG_3;
+						gid_sysarg = SYSARG_4;
+					}
+					else {
+						uid_sysarg = SYSARG_2;
+						gid_sysarg = SYSARG_3;
+					}
+		
+					uid = peek_reg(tracee, ORIGINAL, uid_sysarg);
+					gid = peek_reg(tracee, ORIGINAL, gid_sysarg);
+					struct fakestat fs = {.path={},.uid = uid,.gid = gid,.mode = -1};
+					struct stat mode;
+					strncpy(fs.path, pathname, strlen(pathname));
+					stat(tracee->load_info->host_path, &mode);
+					fs.mode = mode.st_mode;
+					if (0 == insert_or_update_file_state(&fs) ){
+						fprintf(stderr, "action_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname, uid, gid);
+					} else {
+						fprintf(stderr, "!action_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
+					}	
+				}
+				free(pathname);	
+			}
+		}
+		
+		 ///////////////////
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
@@ -611,6 +774,8 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		if (config->euid == 0) /* TODO: || HAS_CAP(...) */
 			poke_reg(tracee, SYSARG_RESULT, 0);
 
+		//fprintf(stderr, "action_end:%s\n", stringify_sysnum(sysnum));
+		
 		return 0;
 	}
 
@@ -629,6 +794,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		gid_t gid;
 		off_t uid_offset;
 		off_t gid_offset;
+		off_t mode_offset;
 
 		/* Override only if it succeed.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
@@ -640,6 +806,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 			sysarg = SYSARG_5;
 			uid_offset = OFFSETOF_STATX_UID;
 			gid_offset = OFFSETOF_STATX_GID;
+			mode_offset = OFFSETOF_STATX_MODE;
 		}
 		else {
 			if (sysnum == PR_fstatat64 || sysnum == PR_newfstatat)
@@ -648,6 +815,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 				sysarg = SYSARG_2;
 			uid_offset = offsetof_stat_uid(tracee);
 			gid_offset = offsetof_stat_gid(tracee);
+			mode_offset = offsetof_stat_mode(tracee);
 		}
 
 		address = peek_reg(tracee, ORIGINAL, sysarg);
@@ -664,15 +832,35 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		gid = peek_uint32(tracee, address + gid_offset);
 		if (errno != 0)
 			gid = 0; /* Not fatal.  */
+		///////////////
+		char *pathname = resovle_path(tracee, sysnum);
+		char *root = get_binding(tracee, GUEST, "/");//&& 
+		int hit = 0;
+		if (pathname) {
+			if(strncmp(pathname, root, strlen(root)) == 0) {
+				struct fakestat fs;
+				if (0 == query_file_state(pathname, &fs)) {
+					fprintf(stderr, "stateend:%s, path=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid);
+					// TODO
+					poke_uint32(tracee, address + uid_offset, fs.uid);
+					poke_uint32(tracee, address + gid_offset, fs.gid);
+					poke_uint32(tracee, address + mode_offset, fs.mode);
+					hit  = 1;
+				} else {
+					//fprintf(stderr, "!stateend:%s, path=%s not found.\n", stringify_sysnum(sysnum), pathname);
+				}
+			}
+			free(pathname);
+		}
+		if (hit == 0) {
+			/* Override only if the file is owned by the current user.
+			* Errors are not fatal here.  */
+			if (uid == getuid())
+				poke_uint32(tracee, address + uid_offset, config->suid);
 
-		/* Override only if the file is owned by the current user.
-		 * Errors are not fatal here.  */
-		if (uid == getuid())
-			poke_uint32(tracee, address + uid_offset, config->suid);
-
-		if (gid == getgid())
-			poke_uint32(tracee, address + gid_offset, config->sgid);
-
+			if (gid == getgid())
+				poke_uint32(tracee, address + gid_offset, config->sgid);
+		}
 		return 0;
 	}
 

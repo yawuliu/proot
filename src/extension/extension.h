@@ -25,6 +25,7 @@
 
 #include <sys/queue.h> /* LIST_, */
 #include <stdint.h>    /* intptr_t, */
+#include <linux/limits.h>
 
 #include "tracee/tracee.h"
 #include "syscall/seccomp.h"
@@ -159,6 +160,14 @@ typedef struct extension {
 	LIST_ENTRY(extension) link;
 } Extension;
 
+struct fakestat {
+    char      path[PATH_MAX];
+	uint32_t   uid;
+	uint32_t   gid;
+	uint32_t   mode;
+};
+
+
 typedef LIST_HEAD(extensions, extension) Extensions;
 
 extern int initialize_extension(Tracee *tracee, extension_callback_t callback, const char *cli);
@@ -189,6 +198,7 @@ static inline int notify_extensions(Tracee *tracee, ExtensionEvent event,
 /* Built-in extensions.  */
 extern int kompat_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
 extern int fake_id0_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
+extern int load_database(char* state_file, const uint32_t remote);
 extern int care_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
 extern int python_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
 extern int link2symlink_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);

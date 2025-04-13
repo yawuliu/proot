@@ -21,10 +21,12 @@ PYTHON_EMBED = $(shell ${PYTHON} -c "import sys; print('--embed' if sys.hexversi
 HAS_PYTHON_CONFIG := $(shell ${PYTHON}-config --ldflags ${PYTHON_EMBED} 2>/dev/null)
 
 CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH) -I$(VPATH)/../lib/uthash/include
-CFLAGS   += -g -Wall -Wextra -O2
+CFLAGS   += -g -Wall -Wextra -O0
 CFLAGS   += $(shell pkg-config --cflags talloc)
+CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
 LDFLAGS  += -Wl,-z,noexecstack
 LDFLAGS  += $(shell pkg-config --libs talloc)
+LDFLAGS  += $(shell pkg-config --static --libs sqlite3)
 
 CARE_LDFLAGS  = $(shell pkg-config --libs libarchive)
 
@@ -64,6 +66,7 @@ OBJECTS += \
 	extension/extension.o	\
 	extension/kompat/kompat.o \
 	extension/fake_id0/fake_id0.o \
+	extension/fake_id0/fake_id0_db.o \
 	extension/link2symlink/link2symlink.o \
 	extension/portmap/portmap.o \
 	extension/portmap/map.o \
@@ -119,9 +122,9 @@ endif
 ######################################################################
 # Auto-configuration
 
-GIT_VERSION := $(shell git describe --tags `git rev-list --tags --max-count=1`)
+GIT_VERSION := 0#$(shell git describe --tags `git rev-list --tags --max-count=1`)
 
-GIT_COMMIT := $(shell git rev-list --all --max-count=1 | cut -c 1-8)
+GIT_COMMIT := 0#$(shell git rev-list --all --max-count=1 | cut -c 1-8)
 
 VERSION = $(GIT_VERSION)-$(GIT_COMMIT)
 

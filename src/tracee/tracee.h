@@ -248,6 +248,9 @@ typedef struct tracee {
 	/* Runner command-line.  */
 	char **qemu;
 
+	/* Runnder state file */
+	char ** state_file;
+
 	/* Path to glue between the guest rootfs and the host rootfs.  */
 	const char *glue;
 

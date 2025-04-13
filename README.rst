@@ -48,6 +48,8 @@ Dependencies
 - `libarchive <https://libarchive.org>`_
 - `libtalloc <https://talloc.samba.org>`_
 - `uthash <https://troydhanson.github.io/uthash>`_ (only required for building CARE)
+- libsqlite3 (only for fakeroot persist) 
+   `sudo apt-get install sqlite3 libsqlite3-dev zlib1g-dev -y`
 
 Manuals
 =======
