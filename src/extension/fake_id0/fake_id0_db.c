@@ -69,35 +69,6 @@ int insert_or_update_file_state(const struct fakestat *fs) {
 }
 
 
-// 删除数据
-int delete_file_state(const char *path) {
-    if (!path) {
-        fprintf(stderr, "Invalid input\n");
-        return 1;
-    }
-
-    const char *sql = "DELETE FROM file_state WHERE path = ?;";
-    sqlite3_stmt *stmt;
-
-    int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-        return 1;
-    }
-
-    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
-
-    rc = sqlite3_step(stmt);
-    if (rc != SQLITE_DONE) {
-        fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(state_db));
-        sqlite3_finalize(stmt);
-        return 1;
-    }
-
-    sqlite3_finalize(stmt);
-    return 0;
-}
-
 // 查询数据
 int query_file_state(const char *path, struct fakestat *fs) {
     if (!path || !fs) {
@@ -131,55 +102,140 @@ int query_file_state(const char *path, struct fakestat *fs) {
     return rc;
 }
 
-// 查询所有数据
-int query_all_file_states(struct fakestat **fs_list, int *count) {
-    if (!fs_list || !count) {
-        fprintf(stderr, "Invalid input\n");
-        return 1;
+void record_file_stat(const char *path, int uid, int gid, int mode, int sysnum) {
+    struct fakestat fs = {.path={},.uid = uid,.gid = gid,.mode = -1};
+    strncpy(fs.path, path, strlen(path));
+    struct fakestat fs1;
+    int exist = query_file_state(path, &fs1);
+    struct stat stat_info;
+    int status = stat(fs.path, &stat_info);
+    if (status != 0) {
+        perror("stat");
+        return;
     }
-
-    *count = 0;
-    *fs_list = NULL;
-
-    const char *sql = "SELECT path, uid, gid, mode FROM file_state;";
-    sqlite3_stmt *stmt;
-
-    int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-        return 1;
-    }
-
-    while (sqlite3_step(stmt) == SQLITE_ROW) {
-        struct fakestat *temp = realloc(*fs_list, (*count + 1) * sizeof(struct fakestat));
-        if (!temp) {
-            fprintf(stderr, "Memory allocation failed\n");
-            sqlite3_finalize(stmt);
-            free(*fs_list);
-            *fs_list = NULL;
-            *count = 0;
-            return 1;
+    if (mode == -1) {
+        if (0 == exist) {
+            fs.mode = fs1.mode & 0777;
+        } else {
+            fs.mode = stat_info.st_mode & 0777;
         }
-
-        *fs_list = temp;
-        const char* path = (const char *)sqlite3_column_text(stmt, 0);
-        strncpy((*fs_list)[*count].path, path, strlen(path));
-        (*fs_list)[*count].uid = sqlite3_column_int(stmt, 1);
-        (*fs_list)[*count].gid = sqlite3_column_int(stmt, 2);
-        (*fs_list)[*count].mode = sqlite3_column_int(stmt, 3);
-        (*count)++;
+    } else {
+        fs.mode = mode & 0777;
     }
-
-    sqlite3_finalize(stmt);
-    return 0;
+    if (uid == -1) {
+        if (0 == exist) {
+			fs.uid = fs1.uid;
+			fs.gid = fs1.gid;
+		} else {
+            fs.uid = stat_info.st_uid;
+			fs.gid = stat_info.st_gid;
+        }
+    }
+    insert_or_update_file_state(&fs);
 }
 
-int close_database() {
-    if (state_db) {
-        sqlite3_close(state_db);
-        state_db = NULL;
-    }
-}
+/*
+struct fakestat fs = {.path={},.uid = -1,.gid = -1,.mode = -1};
+					strncpy(fs.path, pathname, strlen(pathname));
+					fs.mode = st_mode & 0777;
+					struct fakestat fs1;
+					if (0 == exist) {
+						fs.uid = fs1.uid;
+						fs.gid = fs1.gid;
+					} else {
+						struct stat mode;
+						stat(pathname, &mode);
+						fs.uid = mode.st_uid;
+						fs.gid = mode.st_gid;
+					}		
+					if (0 == insert_or_update_file_state(&fs) ){
+						fprintf(stderr, "chmod_enter:%s,pathname=%s, uid=%d, gid=%d, mode=0%o\n", 
+						stringify_sysnum(sysnum),pathname,fs.uid,fs.gid,fs.mode);
+					} else {
+						fprintf(stderr, "!chmod_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
+					}
+
+*/
+
+
+// 删除数据
+// int delete_file_state(const char *path) {
+//     if (!path) {
+//         fprintf(stderr, "Invalid input\n");
+//         return 1;
+//     }
+
+//     const char *sql = "DELETE FROM file_state WHERE path = ?;";
+//     sqlite3_stmt *stmt;
+
+//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
+//     if (rc != SQLITE_OK) {
+//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
+//         return 1;
+//     }
+
+//     sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
+
+//     rc = sqlite3_step(stmt);
+//     if (rc != SQLITE_DONE) {
+//         fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(state_db));
+//         sqlite3_finalize(stmt);
+//         return 1;
+//     }
+
+//     sqlite3_finalize(stmt);
+//     return 0;
+// }
+
+// 查询所有数据
+// int query_all_file_states(struct fakestat **fs_list, int *count) {
+//     if (!fs_list || !count) {
+//         fprintf(stderr, "Invalid input\n");
+//         return 1;
+//     }
+
+//     *count = 0;
+//     *fs_list = NULL;
+
+//     const char *sql = "SELECT path, uid, gid, mode FROM file_state;";
+//     sqlite3_stmt *stmt;
+
+//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
+//     if (rc != SQLITE_OK) {
+//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
+//         return 1;
+//     }
+
+//     while (sqlite3_step(stmt) == SQLITE_ROW) {
+//         struct fakestat *temp = realloc(*fs_list, (*count + 1) * sizeof(struct fakestat));
+//         if (!temp) {
+//             fprintf(stderr, "Memory allocation failed\n");
+//             sqlite3_finalize(stmt);
+//             free(*fs_list);
+//             *fs_list = NULL;
+//             *count = 0;
+//             return 1;
+//         }
+
+//         *fs_list = temp;
+//         const char* path = (const char *)sqlite3_column_text(stmt, 0);
+//         strncpy((*fs_list)[*count].path, path, strlen(path));
+//         (*fs_list)[*count].uid = sqlite3_column_int(stmt, 1);
+//         (*fs_list)[*count].gid = sqlite3_column_int(stmt, 2);
+//         (*fs_list)[*count].mode = sqlite3_column_int(stmt, 3);
+//         (*count)++;
+//     }
+
+//     sqlite3_finalize(stmt);
+//     return 0;
+// }
+
+// int close_database() {
+//     if (state_db) {
+//         sqlite3_close(state_db);
+//         state_db = NULL;
+//     }
+// }
 
 
  // // 准备查询语句

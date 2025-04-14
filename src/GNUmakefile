@@ -21,14 +21,19 @@ PYTHON_EMBED = $(shell ${PYTHON} -c "import sys; print('--embed' if sys.hexversi
 HAS_PYTHON_CONFIG := $(shell ${PYTHON}-config --ldflags ${PYTHON_EMBED} 2>/dev/null)
 
 CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH) -I$(VPATH)/../lib/uthash/include
-CFLAGS   += -g -Wall -Wextra -O0
-CFLAGS   += $(shell pkg-config --cflags talloc)
+# -O2
+CFLAGS   += -g -Wall -Wextra -Os
+CFLAGS   += $(shell pkg-config --static --cflags talloc)
 CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
 LDFLAGS  += -Wl,-z,noexecstack
-LDFLAGS  += $(shell pkg-config --libs talloc)
-LDFLAGS  += $(shell pkg-config --static --libs sqlite3)
+LDFLAGS  += -Wl,-Bstatic $(shell pkg-config --static --libs talloc) -Wl,-Bdynamic
+LDFLAGS  += $(shell pkg-config --libs sqlite3)
+# -L/lib/x86_64-linux-gnu -Wl,-Bstatic -ltalloc -lsqlite3
+#-ltalloc $(shell pkg-config --static --libs talloc)
+#$(shell pkg-config --static --libs sqlite3) # -lsqlite3 -lm -ldl -lz -lpthread
+# LDFLAGS += -static
 
-CARE_LDFLAGS  = $(shell pkg-config --libs libarchive)
+CARE_LDFLAGS  = $(shell pkg-config --static --libs libarchive)
 
 OBJECTS += \
 	cli/cli.o		\
@@ -108,7 +113,7 @@ quiet_CC  = @echo "  CC	$@"; $(CC)
 quiet_LD  = @echo "  LD	$@"; $(LD)
 quiet_INSTALL = @echo "  INSTALL	$?"; $(INSTALL)
 
-V = 0
+V = 1
 ifeq ($(V), 0)
     quiet = quiet_
     Q     = @

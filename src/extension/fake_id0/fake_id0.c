@@ -54,6 +54,8 @@ typedef struct {
 	gid_t egid;
 	gid_t sgid;
 	gid_t fsgid;
+
+	char root_path[PATH_MAX];
 } Config;
 
 typedef struct {
@@ -254,7 +256,8 @@ static char* resovle_path(Tracee *tracee, word_t sysnum) {
 			
 			char *dir_real_path = (char *)malloc(PATH_MAX);
 			if (readlink(dir_path, dir_real_path, PATH_MAX) == -1) {
-				perror("readlink");
+				// perror("readlink");
+				// fprintf(stderr, "readlink: %s, sysnum: %s, fd=%d\n", dir_path, stringify_sysnum(sysnum), dirfd);
 				free(dir_real_path);
 				dir_real_path = NULL;
 			} else {
@@ -278,7 +281,8 @@ static char* resovle_path(Tracee *tracee, word_t sysnum) {
         // 使用 readlink 获取文件路径
         path = (char *)malloc(PATH_MAX);
         if (readlink(proc_path, path, PATH_MAX) == -1) {
-            perror("readlink");
+			// perror("readlink");
+            // fprintf(stderr, "readlink:%s,sysnum; %s, fd=%d\n", proc_path, stringify_sysnum(sysnum), fd);
             free(path);
             path = NULL;
         } else {
@@ -569,6 +573,17 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 } while (0)
 
 
+static void assign_config_root(Tracee *tracee, Config *config) 
+{
+	if (config && config->root_path[0] == 0) {
+		Binding* binding = get_binding(tracee, GUEST, "/");
+		if (binding) {
+			strncpy(config->root_path, binding->host.path, strlen(binding->host.path));
+			strcat(config->root_path, "/");
+		}
+	}
+}
+
 /**
  * Adjust current @tracee's syscall result according to @config.  This
  * function returns -errno if an error occured, otherwise 0.
@@ -577,6 +592,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 {
 	word_t sysnum;
 	word_t result;
+	assign_config_root(tracee, config);
 
 	sysnum = get_sysnum(tracee, ORIGINAL);
 	switch (sysnum) {
@@ -676,9 +692,8 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		///////////////////
 		if (tracee->status != 0 ) {
 			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname ) {
-				char *root = get_binding(tracee, GUEST, "/");
-				if (strncmp(pathname, root, strlen(root)) == 0 ){
+			if (pathname && config) {
+				if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
 					Reg mode_sysarg;
 					mode_t st_mode;
 					if (sysnum == PR_chmod || sysnum == PR_fchmod) {
@@ -687,23 +702,8 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 						mode_sysarg = SYSARG_3;
 					}
 					st_mode = peek_reg(tracee, ORIGINAL, mode_sysarg);
-					struct fakestat fs = {.path={},.uid = -1,.gid = -1,.mode = -1};
-					strncpy(fs.path, pathname, strlen(pathname));
-					fs.mode = st_mode;
-					struct fakestat fs1;
-					if (0 == query_file_state(pathname, &fs1)) {
-						fs.uid = fs1.uid;
-						fs.gid = fs1.gid;
-					} else {
-						struct stat mode;
-						stat(pathname, &mode);
-						fs.uid = mode.st_uid;
-						fs.gid = mode.st_gid;
-					}		
-					if (0 == insert_or_update_file_state(&fs) ){
-						fprintf(stderr, "chmod_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname);
-					} else {
-						fprintf(stderr, "!chmod_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
+					if (tracee->state_file != NULL) {
+						record_file_stat(pathname, -1, -1, st_mode, sysnum);
 					}
 				}
 			}
@@ -730,9 +730,8 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
         ///////////////////
 		if (tracee->status != 0 ) {
 			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname ) {
-				char *root = get_binding(tracee, GUEST, "/");
-				if (strncmp(pathname, root, strlen(root)) == 0 ){
+			if (pathname && config) {
+				if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
 					Reg uid_sysarg;
 					Reg gid_sysarg;
 					uid_t uid;
@@ -748,16 +747,9 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		
 					uid = peek_reg(tracee, ORIGINAL, uid_sysarg);
 					gid = peek_reg(tracee, ORIGINAL, gid_sysarg);
-					struct fakestat fs = {.path={},.uid = uid,.gid = gid,.mode = -1};
-					struct stat mode;
-					strncpy(fs.path, pathname, strlen(pathname));
-					stat(tracee->load_info->host_path, &mode);
-					fs.mode = mode.st_mode;
-					if (0 == insert_or_update_file_state(&fs) ){
-						fprintf(stderr, "action_enter:%s,pathname=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum),pathname, uid, gid);
-					} else {
-						fprintf(stderr, "!action_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
-					}	
+					if (tracee->state_file != NULL) {
+						record_file_stat(pathname, uid,  gid, -1, sysnum);
+					}
 				}
 				free(pathname);	
 			}
@@ -833,25 +825,29 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		if (errno != 0)
 			gid = 0; /* Not fatal.  */
 		///////////////
-		char *pathname = resovle_path(tracee, sysnum);
-		char *root = get_binding(tracee, GUEST, "/");//&& 
 		int hit = 0;
-		if (pathname) {
-			if(strncmp(pathname, root, strlen(root)) == 0) {
-				struct fakestat fs;
-				if (0 == query_file_state(pathname, &fs)) {
-					fprintf(stderr, "stateend:%s, path=%s, uid=%d, gid=%d\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid);
-					// TODO
-					poke_uint32(tracee, address + uid_offset, fs.uid);
-					poke_uint32(tracee, address + gid_offset, fs.gid);
-					poke_uint32(tracee, address + mode_offset, fs.mode);
-					hit  = 1;
-				} else {
-					//fprintf(stderr, "!stateend:%s, path=%s not found.\n", stringify_sysnum(sysnum), pathname);
+		if (tracee->state_file != NULL) {
+			char *pathname = resovle_path(tracee, sysnum);
+			if (pathname && config) {
+				if(strncmp(pathname, config->root_path, strlen(config->root_path)) == 0) {
+					struct fakestat fs;
+					if (0 == query_file_state(pathname, &fs)) {
+						// fprintf(stderr, "%s, path=%s, uid=%d, gid=%d, mode=0%o\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid, fs.mode);
+						// TODO
+						if (uid == getuid())
+							poke_uint32(tracee, address + uid_offset, config->suid);
+						// poke_uint32(tracee, address + uid_offset, fs.uid);
+						// poke_uint32(tracee, address + gid_offset, fs.gid);
+						if (gid == getgid())
+							poke_uint32(tracee, address + gid_offset, config->sgid);
+						// poke_uint32(tracee, address + mode_offset, fs.mode);
+						hit  = 1;
+					}
 				}
+				free(pathname);
 			}
-			free(pathname);
 		}
+
 		if (hit == 0) {
 			/* Override only if the file is owned by the current user.
 			* Errors are not fatal here.  */

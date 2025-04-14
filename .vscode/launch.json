@@ -8,16 +8,35 @@
         "program": "${workspaceFolder}/src/proot", // Replace with your executable path
         "cwd": "${workspaceFolder}/build", // Working directory on the remote machine
         "linux": {
-          "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/", 
-          "-b", "${workspaceFolder}/build/test.sh:/test.sh",
-          "-s", "${workspaceFolder}/build/fake.db",
-           "-q", "/usr/bin/qemu-aarch64-static", "/test.sh"]//'touch /test&&chown liuyawu:liuyawu /test'
+          // "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/", 
+          // "-b", "${workspaceFolder}/build/test.sh:/test.sh",
+          // "-s", "${workspaceFolder}/build/fake.db",
+          //  "-q", "${workspaceFolder}/build/qemu-aarch64-static", "/test.sh"]//'touch /test&&chown liuyawu:liuyawu /test'
+           "args": ["-r", "/home/liuyawu/work_code/lauda_1/test/out/target/product/franklin_asic/rootfs/",
+           "-s", "/home/liuyawu/work_code/lauda_1/test/out/target/product/franklin_asic/rootfs.fake.db",
+           "-b", "/etc/resolv.conf", 
+           "-b", "/home/liuyawu/work_code/lauda_1/test",
+           "-b", "/proc", "-b", "/dev", "-b", "/sys",
+           "-q", "/home/liuyawu/work_code/lauda_1/test/out/host/linux-x86/bin/qemu-aarch64-static", "-0", "-w", "/",
+           "/bin/bash"
+          ]
         },
         "preLaunchTask": "build", // Optional: Name of a build task in tasks.json
         "stopAtEntry": false,
         "internalConsoleOptions": "openOnSessionStart",
         "MIMode": "gdb", // Or 'lldb' if you are using LLDB
         "args": []
+      },
+      {
+        "name": "Attach to gdbserver",
+        "type": "cppdbg",
+        "request": "launch",
+        "program": "${workspaceFolder}/src/proot",
+        "miDebuggerServerAddress": "127.0.0.1:1234",
+        "cwd": "${workspaceRoot}", 
+        "linux": {
+          "MIMode": "gdb"
+        }
       }
     ]
   }

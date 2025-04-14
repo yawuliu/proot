@@ -225,7 +225,7 @@ static int handle_option_s(Tracee *tracee, const Cli *cli UNUSED, const char *va
 	tracee->state_file = talloc_zero_array(tracee, char *, nb_args + 1);
 	if (tracee->state_file == NULL)
 		return -1;
-	// talloc_set_name_const(tracee->state_file, "@state_file");
+	//talloc_set_name_const(tracee->state_file, "@state_file");
 
 	i = 0;
 	ptr = value;

@@ -547,6 +547,7 @@ int new_child(Tracee *parent, word_t clone_flags)
 	child->exe = talloc_reference(child, parent->exe);
 
 	child->qemu = talloc_reference(child, parent->qemu);
+	child->state_file = talloc_reference(child, parent->state_file);
 	child->glue = talloc_reference(child, parent->glue);
 
 	child->host_ldso_paths  = talloc_reference(child, parent->host_ldso_paths);
