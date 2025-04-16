@@ -22,7 +22,7 @@ HAS_PYTHON_CONFIG := $(shell ${PYTHON}-config --ldflags ${PYTHON_EMBED} 2>/dev/n
 
 CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH) -I$(VPATH)/../lib/uthash/include
 # -O2
-CFLAGS   += -g -Wall -Wextra -Os
+CFLAGS   += -g -Wall -Wextra -O0
 CFLAGS   += $(shell pkg-config --static --cflags talloc)
 CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
 LDFLAGS  += -Wl,-z,noexecstack

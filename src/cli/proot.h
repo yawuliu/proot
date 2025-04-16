@@ -61,6 +61,7 @@ static int handle_option_0(Tracee *tracee, const Cli *cli, const char *value);
 static int handle_option_i(Tracee *tracee, const Cli *cli, const char *value);
 static int handle_option_p(Tracee *tracee, const Cli *cli, const char *value);
 static int handle_option_s(Tracee *tracee, const Cli *cli, const char *value);
+static int handle_option_f(Tracee *tracee, const Cli *cli, const char *value);
 static int handle_option_n(Tracee *tracee, const Cli *cli, const char *value);
 #ifdef HAVE_PYTHON_EXTENSION
 static int handle_option_P(Tracee *tracee, const Cli *cli, const char *value);
@@ -364,6 +365,16 @@ Copyright (C) 2023 PRoot Developers, licensed under GPL v2 or later.",
 \talso automatically saved when the last process exists. If more then one instance of proot is\n\
 \tloaded simultaneously, both with the same state_file, then the two instances will share state  and\n\
 \ttheir processes will see the same picture at runtime.",
+	},
+	{
+		.class = "Regular options",
+		.arguments = {
+		  { .name = "-f", .separator = ' ', .value = "command" },
+		  { .name = "--state_file_filter", .separator = '=', .value = "command" },
+		  { .name = NULL, .separator = '\0', .value = NULL } },
+		.handler = handle_option_f,
+		.description = "proot state_file_filter of fake state database",
+		.detail = "\t state_file_filter was use for limit fake file state records.",
 	},
 	END_OF_OPTIONS,
 	},

@@ -43,20 +43,8 @@
 #include "execve/auxv.h"
 #include "path/binding.h"
 #include "arch.h"
+#include "fake_id0.h"
 
-typedef struct {
-	uid_t ruid;
-	uid_t euid;
-	uid_t suid;
-	uid_t fsuid;
-
-	gid_t rgid;
-	gid_t egid;
-	gid_t sgid;
-	gid_t fsgid;
-
-	char root_path[PATH_MAX];
-} Config;
 
 typedef struct {
 	char *path;
@@ -65,6 +53,19 @@ typedef struct {
 
 /* List of syscalls handled by this extensions.  */
 static FilteredSysnum filtered_sysnums[] = {
+    {PR_open, FILTER_SYSEXIT},
+	{PR_openat, FILTER_SYSEXIT},
+	{PR_creat, FILTER_SYSEXIT},
+	{PR_mkdir, FILTER_SYSEXIT},
+	{PR_mkdirat, FILTER_SYSEXIT},
+	{PR_link, FILTER_SYSEXIT},
+	{PR_linkat, FILTER_SYSEXIT},
+	{PR_symlink, FILTER_SYSEXIT},
+	{PR_symlinkat, FILTER_SYSEXIT},
+	{PR_renameat, FILTER_SYSEXIT},
+	{PR_rename, FILTER_SYSEXIT},
+	{PR_rmdir, FILTER_SYSEXIT},
+	//
 	{ PR_capset,		FILTER_SYSEXIT },
 	{ PR_chmod,		FILTER_SYSEXIT },
 	{ PR_chown,		FILTER_SYSEXIT },
@@ -236,11 +237,18 @@ static void override_permissions(const Tracee *tracee, const char *path, bool is
 
 static char* resovle_path(Tracee *tracee, word_t sysnum) {
 	char *path = NULL;
-	if (sysnum == PR_fchownat || sysnum == PR_fstatat64 || sysnum == PR_newfstatat || sysnum == PR_statx || sysnum == PR_fchmodat) {
+	if (sysnum == PR_fchownat || sysnum == PR_fstatat64 || sysnum == PR_newfstatat || 
+		sysnum == PR_statx || sysnum == PR_fchmodat ||
+		sysnum == PR_openat || sysnum == PR_mkdirat ||
+		sysnum == PR_linkat || sysnum == PR_renameat || sysnum == PR_symlinkat) {
 		Reg dirfd_sysarg;
 		Reg pathname_sysarg;
 		dirfd_sysarg = SYSARG_1;
 		pathname_sysarg = SYSARG_2;
+		if (sysnum == PR_linkat || sysnum == PR_renameat || sysnum == PR_symlinkat) {
+			dirfd_sysarg = SYSARG_3;
+			pathname_sysarg = SYSARG_4;
+		}
 		int dirfd = peek_reg(tracee, ORIGINAL, dirfd_sysarg);
 		char rel_path[PATH_MAX];
 		int status = get_sysarg_path(tracee, rel_path, pathname_sysarg);
@@ -290,9 +298,15 @@ static char* resovle_path(Tracee *tracee, word_t sysnum) {
             path[PATH_MAX - 1] = '\0';
         }
 	} else if(sysnum == PR_lchown || sysnum == PR_lchown32 || sysnum == PR_chown || sysnum == PR_chown32 ||
-		sysnum == PR_stat || sysnum == PR_lstat || sysnum == PR_stat64 || sysnum == PR_lstat64|| sysnum == PR_chmod	) {
+		sysnum == PR_stat || sysnum == PR_lstat || sysnum == PR_stat64 || sysnum == PR_lstat64|| sysnum == PR_chmod ||
+		sysnum == PR_open || sysnum == PR_creat	|| sysnum == PR_mkdir || 
+		sysnum == PR_link || sysnum == PR_symlink ||
+		sysnum == PR_rename) {
 		Reg path_sysarg;
 		path_sysarg = SYSARG_1;
+		if (sysnum == PR_link || sysnum == PR_symlink || sysnum == PR_rename) {
+			path_sysarg = SYSARG_2;
+		}
 		char rel_path[PATH_MAX];
 		int status = get_sysarg_path(tracee, rel_path, path_sysarg);
 		if (status < 0) {
@@ -576,13 +590,22 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 static void assign_config_root(Tracee *tracee, Config *config) 
 {
 	if (config && config->root_path[0] == 0) {
-		Binding* binding = get_binding(tracee, GUEST, "/");
-		if (binding) {
-			strncpy(config->root_path, binding->host.path, strlen(binding->host.path));
-			strcat(config->root_path, "/");
+		if (tracee->state_file_filter!=NULL && strlen(tracee->state_file_filter[0]) >0 ) {
+			strncpy(config->root_path, tracee->state_file_filter[0], strlen(tracee->state_file_filter[0]));
+		} else {
+			Binding* binding = get_binding(tracee, GUEST, "/");
+			if (binding) {
+				strncpy(config->root_path, binding->host.path, strlen(binding->host.path));
+				if (config->root_path[strlen(config->root_path)-1] != "/")  {
+					strcat(config->root_path, "/");
+				}
+			}
 		}
 	}
 }
+
+
+
 
 /**
  * Adjust current @tracee's syscall result according to @config.  This
@@ -593,10 +616,9 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	word_t sysnum;
 	word_t result;
 	assign_config_root(tracee, config);
-
 	sysnum = get_sysnum(tracee, ORIGINAL);
+	lie_database(tracee, config, sysnum);
 	switch (sysnum) {
-
 	case PR_setuid:
 	case PR_setuid32:
 		SETXID(uid);
@@ -689,25 +711,6 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	case PR_fchmod:
 	case PR_fchmodat: {
 		word_t result;
-		///////////////////
-		if (tracee->status != 0 ) {
-			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname && config) {
-				if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
-					Reg mode_sysarg;
-					mode_t st_mode;
-					if (sysnum == PR_chmod || sysnum == PR_fchmod) {
-						mode_sysarg = SYSARG_2;
-					} else {
-						mode_sysarg = SYSARG_3;
-					}
-					st_mode = peek_reg(tracee, ORIGINAL, mode_sysarg);
-					if (tracee->state_file != NULL) {
-						record_file_stat(pathname, -1, -1, st_mode, sysnum);
-					}
-				}
-			}
-		}
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
@@ -727,34 +730,6 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	case PR_lchown32:
 	case PR_fchownat: {
 		word_t result;
-        ///////////////////
-		if (tracee->status != 0 ) {
-			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname && config) {
-				if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
-					Reg uid_sysarg;
-					Reg gid_sysarg;
-					uid_t uid;
-					gid_t gid;
-					if (sysnum == PR_fchownat) {
-						uid_sysarg = SYSARG_3;
-						gid_sysarg = SYSARG_4;
-					}
-					else {
-						uid_sysarg = SYSARG_2;
-						gid_sysarg = SYSARG_3;
-					}
-		
-					uid = peek_reg(tracee, ORIGINAL, uid_sysarg);
-					gid = peek_reg(tracee, ORIGINAL, gid_sysarg);
-					if (tracee->state_file != NULL) {
-						record_file_stat(pathname, uid,  gid, -1, sysnum);
-					}
-				}
-				free(pathname);	
-			}
-		}
-		
 		 ///////////////////
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
@@ -826,27 +801,27 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 			gid = 0; /* Not fatal.  */
 		///////////////
 		int hit = 0;
-		if (tracee->state_file != NULL) {
-			char *pathname = resovle_path(tracee, sysnum);
-			if (pathname && config) {
-				if(strncmp(pathname, config->root_path, strlen(config->root_path)) == 0) {
-					struct fakestat fs;
-					if (0 == query_file_state(pathname, &fs)) {
-						// fprintf(stderr, "%s, path=%s, uid=%d, gid=%d, mode=0%o\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid, fs.mode);
-						// TODO
-						if (uid == getuid())
-							poke_uint32(tracee, address + uid_offset, config->suid);
-						// poke_uint32(tracee, address + uid_offset, fs.uid);
-						// poke_uint32(tracee, address + gid_offset, fs.gid);
-						if (gid == getgid())
-							poke_uint32(tracee, address + gid_offset, config->sgid);
-						// poke_uint32(tracee, address + mode_offset, fs.mode);
-						hit  = 1;
-					}
-				}
-				free(pathname);
-			}
-		}
+		// if (tracee->state_file != NULL) {
+		// 	char *pathname = resovle_path(tracee, sysnum);
+		// 	if (pathname && config) {
+		// 		if(strncmp(pathname, config->root_path, strlen(config->root_path)) == 0) {
+		// 			struct fakestat fs;
+		// 			if (0 == query_file_state(pathname, &fs)) {
+		// 				// fprintf(stderr, "%s, path=%s, uid=%d, gid=%d, mode=0%o\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid, fs.mode);
+		// 				// TODO
+		// 				if (uid == getuid())
+		// 					poke_uint32(tracee, address + uid_offset, config->suid);
+		// 				// poke_uint32(tracee, address + uid_offset, fs.uid);
+		// 				// poke_uint32(tracee, address + gid_offset, fs.gid);
+		// 				if (gid == getgid())
+		// 					poke_uint32(tracee, address + gid_offset, config->sgid);
+		// 				// poke_uint32(tracee, address + mode_offset, fs.mode);
+		// 				hit  = 1;
+		// 			}
+		// 		}
+		// 		free(pathname);
+		// 	}
+		// }
 
 		if (hit == 0) {
 			/* Override only if the file is owned by the current user.

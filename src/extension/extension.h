@@ -160,14 +160,6 @@ typedef struct extension {
 	LIST_ENTRY(extension) link;
 } Extension;
 
-struct fakestat {
-    char      path[PATH_MAX];
-	uint32_t   uid;
-	uint32_t   gid;
-	uint32_t   mode;
-};
-
-
 typedef LIST_HEAD(extensions, extension) Extensions;
 
 extern int initialize_extension(Tracee *tracee, extension_callback_t callback, const char *cli);

@@ -261,10 +261,81 @@ static int handle_option_s(Tracee *tracee, const Cli *cli UNUSED, const char *va
 	} while (!last);
 	assert(i == nb_args);
 
-	if (load_database(tracee->state_file[0], 0) != 0) {
+	if (!load_map(tracee->state_file[0], 0)) {
 		note(tracee, ERROR, INTERNAL, "can't load database %s.", tracee->state_file[0]);
 		return -1;
 	}
+	return 0;
+}
+
+
+static int handle_option_f(Tracee *tracee, const Cli *cli UNUSED, const char *value)
+{
+	const char *ptr;
+	size_t nb_args;
+	bool last;
+	size_t i;
+
+	nb_args = 0;
+	ptr = value;
+	while (1) {
+		nb_args++;
+
+		/* Keep consecutive non-space characters.  */
+		while (*ptr != ' ' && *ptr != '\0')
+			ptr++;
+
+		/* End-of-string ?  */
+		if (*ptr == '\0')
+			break;
+
+		/* Skip consecutive space separators.  */
+		while (*ptr == ' ' && *ptr != '\0')
+			ptr++;
+
+		/* End-of-string ?  */
+		if (*ptr == '\0')
+			break;
+	}
+
+	tracee->state_file_filter = talloc_zero_array(tracee, char *, nb_args + 1);
+	if (tracee->state_file_filter == NULL)
+		return -1;
+	//talloc_set_name_const(tracee->state_file_filter, "@state_file_filter");
+
+	i = 0;
+	ptr = value;
+	do {
+		const void *start;
+		const void *end;
+		last = true;
+
+		/* Keep consecutive non-space characters.  */
+		start = ptr;
+		while (*ptr != ' ' && *ptr != '\0')
+			ptr++;
+		end = ptr;
+
+		/* End-of-string ?  */
+		if (*ptr == '\0')
+			goto next;
+
+		/* Remove consecutive space separators.  */
+		while (*ptr == ' ' && *ptr != '\0')
+			ptr++;
+
+		/* End-of-string ?  */
+		if (*ptr == '\0')
+			goto next;
+
+		last = false;
+	next:
+		tracee->state_file_filter[i] = talloc_strndup(tracee->state_file_filter, start, end - start);
+		if (tracee->state_file_filter[i] == NULL)
+			return -1;
+		i++;
+	} while (!last);
+	assert(i == nb_args);
 	return 0;
 }
 

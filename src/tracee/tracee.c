@@ -548,6 +548,7 @@ int new_child(Tracee *parent, word_t clone_flags)
 
 	child->qemu = talloc_reference(child, parent->qemu);
 	child->state_file = talloc_reference(child, parent->state_file);
+	child->state_file_filter = talloc_reference(child, parent->state_file_filter);
 	child->glue = talloc_reference(child, parent->glue);
 
 	child->host_ldso_paths  = talloc_reference(child, parent->host_ldso_paths);
@@ -626,6 +627,7 @@ int swap_config(Tracee *tracee1, Tracee *tracee2)
 	return 0;
 }
 
+bool save_map();
 /* Send the KILL signal to all tracees.  */
 void kill_all_tracees()
 {
@@ -633,4 +635,10 @@ void kill_all_tracees()
 
 	LIST_FOREACH(tracee, &tracees, link)
 		kill(tracee->pid, SIGKILL);
+	
+	//
+	if (!save_map()) {
+		note(NULL, ERROR, INTERNAL, "can't save database.");
+	}
+	//
 }

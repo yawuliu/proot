@@ -15,6 +15,17 @@
         "string": "c",
         "unordered_map": "c",
         "vector": "c",
-        "stdbool.h": "c"
+        "stdbool.h": "c",
+        "functional": "c",
+        "audit.h": "c",
+        "ptrace.h": "c",
+        "seccomp.h": "c",
+        "sysnum.h": "c",
+        "binding.h": "c",
+        "syscall.h": "c",
+        "stdlib.h": "c",
+        "care.h": "c",
+        "stat.h": "c",
+        "algorithm": "c"
     }
 }

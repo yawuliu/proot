@@ -251,6 +251,9 @@ typedef struct tracee {
 	/* Runnder state file */
 	char ** state_file;
 
+	/* Runner record state_file filter */
+	char ** state_file_filter;
+
 	/* Path to glue between the guest rootfs and the host rootfs.  */
 	const char *glue;
 

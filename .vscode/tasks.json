@@ -6,7 +6,28 @@
             "command": "make",
             "args": ["-C","src","proot","-j8"],
             "problemMatcher": [],
-        }
+            "dependsOn": "prepare"
+        },
+        {
+            "type": "shell",
+            "label": "prepare",
+            "command": "build/prepare.sh",
+            "problemMatcher": [],
+        },
+        {
+            "type": "shell",
+            "label": "tar",
+            "command": "make",
+            "args": ["-C","src","proot","-j8"],
+            "problemMatcher": [],
+            "dependsOn": "prepare_tar"
+        },
+        {
+            "type": "shell",
+            "label": "prepare_tar",
+            "command": "build/prepare_tar.sh",
+            "problemMatcher": [],
+        },
     ],
     "version": "2.0.0"
 }
