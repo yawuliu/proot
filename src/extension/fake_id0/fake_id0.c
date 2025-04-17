@@ -615,9 +615,9 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 {
 	word_t sysnum;
 	word_t result;
+	int exit_status = 0;
 	assign_config_root(tracee, config);
 	sysnum = get_sysnum(tracee, ORIGINAL);
-	lie_database(tracee, config, sysnum);
 	switch (sysnum) {
 	case PR_setuid:
 	case PR_setuid32:
@@ -654,36 +654,36 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	case PR_getuid:
 	case PR_getuid32:
 		poke_reg(tracee, SYSARG_RESULT, config->ruid);
-		return 0;
+		goto end;
 
 	case PR_getgid:
 	case PR_getgid32:
 		poke_reg(tracee, SYSARG_RESULT, config->rgid);
-		return 0;
+		goto end;
 
 	case PR_geteuid:
 	case PR_geteuid32:
 		poke_reg(tracee, SYSARG_RESULT, config->euid);
-		return 0;
+		goto end;
 
 	case PR_getegid:
 	case PR_getegid32:
 		poke_reg(tracee, SYSARG_RESULT, config->egid);
-		return 0;
+		goto end;
 
 	case PR_getresuid:
 	case PR_getresuid32:
 		POKE_MEM_ID(SYSARG_1, ruid);
 		POKE_MEM_ID(SYSARG_2, euid);
 		POKE_MEM_ID(SYSARG_3, suid);
-		return 0;
+		goto end;
 
 	case PR_getresgid:
 	case PR_getresgid32:
 		POKE_MEM_ID(SYSARG_1, rgid);
 		POKE_MEM_ID(SYSARG_2, egid);
 		POKE_MEM_ID(SYSARG_3, sgid);
-		return 0;
+		goto end;
 
 	case PR_setdomainname:
 	case PR_sethostname:
@@ -699,13 +699,13 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
-			return 0;
+			goto end;
 
 		/* Force success if the tracee was supposed to have
 		* the capability.  */
 		if (config->euid == 0) /* TODO: || HAS_CAP(...) */
 			poke_reg(tracee, SYSARG_RESULT, 0);
-		return 0;
+		goto end;
 	}
 	case PR_chmod:
 	case PR_fchmod:
@@ -714,13 +714,13 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
-			return 0;
+			goto end;
 
 		/* Force success if the tracee was supposed to have
 		* the capability.  */
 		if (config->euid == 0) /* TODO: || HAS_CAP(...) */
 			poke_reg(tracee, SYSARG_RESULT, 0);
-		return 0;
+		goto end;
 	}
 	case PR_chown:
 	case PR_fchown:
@@ -734,7 +734,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
-			return 0;
+			goto end;
 
 		/* Force success if the tracee was supposed to have
 		 * the capability.  */
@@ -743,7 +743,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 
 		//fprintf(stderr, "action_end:%s\n", stringify_sysnum(sysnum));
 		
-		return 0;
+		goto end;
 	}
 
 	case PR_fstatat64:
@@ -766,7 +766,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		/* Override only if it succeed.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if (result != 0)
-			return 0;
+			goto end;
 
 		/* Get the address of the 'stat' structure.  */
 		if (sysnum == PR_statx) {
@@ -832,7 +832,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 			if (gid == getgid())
 				poke_uint32(tracee, address + gid_offset, config->sgid);
 		}
-		return 0;
+		goto end;
 	}
 
 	case PR_chroot: {
@@ -842,36 +842,41 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		int status;
 
 		if (config->euid != 0) /* TODO: && !HAS_CAP(SYS_CHROOT) */
-			return 0;
+			goto end;
 
 		/* Override only permission errors.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 		if ((int) result != -EPERM)
-			return 0;
+			goto end;
 
 		input = peek_reg(tracee, MODIFIED, SYSARG_1);
 
 		status = read_path(tracee, path, input);
-		if (status < 0)
-			return status;
+		if (status < 0) {
+			exit_status = status;
+			goto end;
+		}
 
 		/* Resolve relative path segments. */
 		if (!realpath(path, abspath))
-			return 0;
-
+			goto end;
+			
 		/* Only "new rootfs == current rootfs" is supported yet.  */
 		status = compare_paths(get_root(tracee), abspath);
 		if (status != PATHS_ARE_EQUAL)
-			return 0;
+			goto end;
 
 		/* Force success.  */
 		poke_reg(tracee, SYSARG_RESULT, 0);
-		return 0;
+		goto end;
 	}
 
 	default:
-		return 0;
+		goto end;
 	}
+end:
+	lie_database(tracee, config, sysnum);
+	return exit_status;
 }
 
 #undef POKE_MEM_ID

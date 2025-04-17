@@ -26,6 +26,11 @@
         "stdlib.h": "c",
         "care.h": "c",
         "stat.h": "c",
-        "algorithm": "c"
+        "algorithm": "c",
+        "tracee.h": "c",
+        "array": "c",
+        "string_view": "c",
+        "initializer_list": "c",
+        "utility": "c"
     }
 }

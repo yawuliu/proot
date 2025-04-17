@@ -10,6 +10,7 @@
         "linux": {
           "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/", 
           "-b", "${workspaceFolder}/build/test.sh:/test.sh",
+          "-b", "/etc/resolv.conf",
           "-s", "${workspaceFolder}/build/fake.db",
            "-q", "/usr/bin/qemu-aarch64-static", "/test.sh"]//'touch /test&&chown liuyawu:liuyawu /test'
           //  "args": ["-r", "/home/liuyawu/work_code/lauda_1/test/out/target/product/franklin_asic/rootfs/",
