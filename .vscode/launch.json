@@ -8,9 +8,11 @@
         "program": "${workspaceFolder}/src/proot", // Replace with your executable path
         "cwd": "${workspaceFolder}/build", // Working directory on the remote machine
         "linux": {
-          "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/", 
+          "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/",
+          "-f", "${workspaceFolder}/fsconfig.txt,${workspaceFolder}/build/rootfs",
           "-b", "${workspaceFolder}/build/test.sh:/test.sh",
           "-b", "/etc/resolv.conf",
+          "-b", "/proc", "-b", "/dev", "-b", "/sys",
           "-s", "${workspaceFolder}/build/fake.db",
            "-q", "/usr/bin/qemu-aarch64-static", "/test.sh"]//'touch /test&&chown liuyawu:liuyawu /test'
           //  "args": ["-r", "/home/liuyawu/work_code/lauda_1/test/out/target/product/franklin_asic/rootfs/",
@@ -22,6 +24,24 @@
           //  "/bin/bash"
           // ]
         },
+        // "environment": [{
+        //   "name": "PROOT_NO_SECCOMP",
+        //   "value": "1"
+        // }],
+        "setupCommands": [
+          {
+              "description": "Enable pretty-printing for gdb",
+              "text": "-enable-pretty-printing",
+              "ignoreFailures": true
+          },
+          {
+              "description": "Set Disassembly Flavor to Intel",
+              "text": "-gdb-set disassembly-flavor intel",
+              "ignoreFailures": true
+          }
+        ],
+        "visualizerFile": "${workspaceFolder}/my.natvis",
+        "showDisplayString": true,
         "preLaunchTask": "build", // Optional: Name of a build task in tasks.json
         "stopAtEntry": false,
         "internalConsoleOptions": "openOnSessionStart",
@@ -36,7 +56,7 @@
         "cwd": "${workspaceFolder}/build", // Working directory on the remote machine
         "linux": {
           "args": ["-0", "-w","${workspaceFolder}", 
-          "-f", "${workspaceFolder}/build/rootfs",
+          "-f", "${workspaceFolder}/fsconfig.txt,${workspaceFolder}/build/rootfs",
           "-b", "/proc", "-b", "/sys", "-b", "/dev",
           "-b", "${workspaceFolder}/build/test_tar.sh:/test_tar.sh",
           "-s", "${workspaceFolder}/build/fake.db",

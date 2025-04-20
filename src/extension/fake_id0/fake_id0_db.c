@@ -3,18 +3,36 @@
 #include <sqlite3.h>
 #include "fake_id0.h"
 #include <sys/stat.h>
+#include <errno.h>
 #include <sys/xattr.h>
 #include <linux/capability.h>
 #include "tracee/tracee.h"
 #include "extension/extension.h"
 
+extern int errno;
 static sqlite3 *state_db = NULL;
-#define sqlite3_column_raw_uint64(stmt, columnindex) *(uint64_t *)(sqlite3_column_blob((sqlite3_stmt *)(stmt),(columnindex)))
+static char s_fsconfig_outpath[PATH_MAX] = {0};
+static char s_fsconfig_rootdir[PATH_MAX] = {0};
+
+bool set_fsconfig_out(const char* fsconfig_outpath) {
+    if (strlen(fsconfig_outpath) == 0) {
+        return true;
+    }
+    if (NULL == strstr(fsconfig_outpath,",")) {
+        strncpy(s_fsconfig_outpath, fsconfig_outpath, strlen(fsconfig_outpath));
+    } else {
+        char *temp = strtok(fsconfig_outpath, ",");
+        strncpy(s_fsconfig_outpath, temp, strlen(temp));
+        temp = strtok(NULL, ",");
+        strncpy(s_fsconfig_rootdir, temp, strlen(temp));
+    }
+}
+
 //==============================
 // 全局哈希表
 static file_hash_entry_t *map_hash = NULL;
 
-bool load_map(char* state_file)
+bool load_map(const char* state_file)
 {
     int rc;
     if (state_db != NULL) {
@@ -22,19 +40,29 @@ bool load_map(char* state_file)
         return false;
     }
     // 打开 SQLite 数据库
-    rc = sqlite3_open(state_file, &state_db);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(state_db));
-        return false;
+    int retry_count = 60; // 尝试打开数据库的次数
+    int retry_interval = 1000; // 两次尝试之间的间隔（毫秒）
+    for (int i = 0; i < retry_count; i++) {
+        rc = sqlite3_open_v2(state_file, &state_db,  SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
+        if (rc == SQLITE_OK) {
+            printf("成功打开数据库\n");
+            break;
+        } else if (rc == SQLITE_BUSY) {
+            printf("数据库正忙，尝试次数：%d\n", i + 1);
+            usleep(retry_interval * 1000); // 毫秒转微秒
+        } else {
+            fprintf(stderr, "Can't open database: %s\n", sqlite3_errmsg(state_db));
+            return false;
+        }
     }
      // 启用 WAL 模式
     char *errMsg = 0;
-    rc = sqlite3_exec(state_db, "PRAGMA journal_mode=WAL;", 0, 0, &errMsg);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "SQL error: %s\n", errMsg);
-        sqlite3_free(errMsg);
-        return 1;
-    }
+    // rc = sqlite3_exec(state_db, "PRAGMA journal_mode=WAL;", 0, 0, &errMsg);
+    // if (rc != SQLITE_OK) {
+    //     fprintf(stderr, "SQL error: %s\n", errMsg);
+    //     sqlite3_free(errMsg);
+    //     return 1;
+    // }
     // 检查表是否存在，如果不存在则创建
     const char *sql = "CREATE TABLE IF NOT EXISTS fakedb (" 
                       "path TEXT NOT NULL,"
@@ -45,8 +73,7 @@ bool load_map(char* state_file)
                       "gid INTEGER NOT NULL, "
                       "rdev INTEGER NOT NULL, "
                       "nlink INTEGER NOT NULL, "
-                      "caps TEXT NOT NULL,"
-                      "UNIQUE (dev, ino) ON CONFLICT REPLACE);";
+                      "caps TEXT NOT NULL);"; // UNIQUE (dev, ino) ON CONFLICT REPLACE)
 
     rc = sqlite3_exec(state_db, sql, 0, 0, &errMsg);
     if (rc != SQLITE_OK) {
@@ -90,8 +117,83 @@ bool load_map(char* state_file)
     return true;
 }
 
+#define CAP_MASK_LONG(cap_name) (1ULL << (cap_name))
+bool save_fsconfig() {
+    if (strlen(s_fsconfig_outpath) == 0) {
+        return true;
+    }
+    char sql[PATH_MAX] = {0};
+    if (strlen(s_fsconfig_rootdir) == 0) {
+        snprintf(sql, sizeof(sql),"SELECT path, dev, ino, mode, uid, gid, rdev, nlink, caps FROM fakedb ORDER BY path;");
+    } else {
+        snprintf(sql, sizeof(sql),"SELECT path, dev, ino, mode, uid, gid, rdev, nlink, caps FROM fakedb WHERE path like '%s%%' \
+ORDER BY path;", s_fsconfig_rootdir);
+    }
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
+        return false;
+    }
+    FILE* fp = fopen(s_fsconfig_outpath, "w");
+     if (fp == NULL) {
+        fprintf(stderr, "open fsconfig output %s error\n", s_fsconfig_outpath);
+        return false;
+    }
+    char *tmp = NULL;
+    size_t s_fsconfig_rootdir_len = strlen(s_fsconfig_rootdir);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        stat_override_t override={0};
+        const char* pp = sqlite3_column_text(stmt, 0);
+        if (pp!=NULL) {
+            strncpy(override.path, pp, strlen(pp));
+        }
+        override.dev = sqlite3_column_int(stmt, 1);
+        override.inode = sqlite3_column_int(stmt, 2);
+        override.mode = sqlite3_column_int(stmt, 3);
+        if(!S_ISREG(override.mode) && !S_ISDIR(override.mode) && !S_ISLNK(override.mode)){
+            continue;
+        }
+        override.uid = sqlite3_column_int(stmt, 4);
+        override.gid = sqlite3_column_int(stmt, 5);
+        override.dev_id = sqlite3_column_int(stmt, 6);
+        if (override.dev_id != 0) {// 特殊文件
+            continue;
+        }
+        override.nlink = sqlite3_column_int(stmt, 7);
+        pp = sqlite3_column_text(stmt, 8);
+        if (pp!=NULL) {
+            strncpy(override.caps, pp, strlen(pp));
+        }
+        if (s_fsconfig_rootdir_len > 0)
+            tmp = strstr(override.path, s_fsconfig_rootdir);
+            if (tmp) {
+                tmp = override.path + s_fsconfig_rootdir_len;
+            }
+        else
+            tmp = override.path;
+
+        uint64_t capabilities = 0;
+        if (override.mode&S_ISUID) {
+            capabilities |= CAP_MASK_LONG(CAP_SETUID);
+        }
+        if(override.mode&S_ISGID) {
+            capabilities |= CAP_MASK_LONG(CAP_SETGID);
+        }
+
+        if (tmp)
+            fprintf(fp,"%s %d %d %o capabilities=0x%x\n", tmp, override.uid, override.gid, override.mode&0777, 0);
+    }
+    fclose(fp);
+    sqlite3_finalize(stmt);
+    return true;
+}
+
 bool save_map()
 {
+    if (state_db == NULL) {
+        return true;
+    }
     const char *sql = "DELETE FROM fakedb;";
     char *errMsg = 0;
     int rc = sqlite3_exec(state_db, sql, 0, 0, &errMsg);
@@ -115,8 +217,11 @@ bool save_map()
     file_hash_entry_t *current_entry = NULL, *tmp = NULL;
     HASH_ITER(hh, map_hash, current_entry, tmp) {
         const stat_override_t *override = &current_entry->value;
-        // fprintf(stderr,"override->dev=%d,override->inode=%d,override->transient=%d\n",
-        //  override->dev, override->inode, override->transient);
+        if (strstr(override->path, "usr/bin/systemd-cat")) {
+            int nn =0;
+            nn++;
+            fprintf(stderr, "save_map %s\n", override->path);
+        }
         if (!override->transient) {
             sqlite3_bind_text(stmt, 1, override->path, -1, SQLITE_STATIC);
             sqlite3_bind_int(stmt, 2, override->dev);
@@ -141,108 +246,17 @@ bool save_map()
         free(current_entry);
     }
     sqlite3_finalize(stmt);
+    //
+    bool rt = save_fsconfig();
+    if (!rt) {
+        fprintf(stderr, "save fsconfig error\n");
+        return false;
+    }
+    //
+    sqlite3_close(state_db);
+    state_db = NULL;
     return true;
 }
-
-// 插入或更新数据
-// int insert_or_update_file_state(const struct fakestat *fs) {
-//     if (!fs || !fs->path) {
-//         fprintf(stderr, "Invalid input\n");
-//         return 1;
-//     }
-
-//     const char *sql = "INSERT OR REPLACE INTO file_state (path, uid, gid, mode) VALUES (?, ?, ?, ?);";
-//     sqlite3_stmt *stmt;
-
-//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-//     if (rc != SQLITE_OK) {
-//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-//         return 1;
-//     }
-
-//     sqlite3_bind_text(stmt, 1, fs->path, -1, SQLITE_STATIC);
-//     sqlite3_bind_int(stmt, 2, fs->uid);
-//     sqlite3_bind_int(stmt, 3, fs->gid);
-//     sqlite3_bind_int(stmt, 4, fs->mode);
-
-//     rc = sqlite3_step(stmt);
-//     if (rc != SQLITE_DONE) {
-//         fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(state_db));
-//         sqlite3_finalize(stmt);
-//         return 1;
-//     }
-
-//     sqlite3_finalize(stmt);
-//     return 0;
-// }
-
-
-// 查询数据
-// int query_file_state(const char *path, struct fakestat *fs) {
-//     if (!path || !fs) {
-//         fprintf(stderr, "Invalid input\n");
-//         return 1;
-//     }
-
-//     const char *sql = "SELECT path, uid, gid, mode FROM file_state WHERE path = ?;";
-//     sqlite3_stmt *stmt;
-
-//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-//     if (rc != SQLITE_OK) {
-//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-//         return 1;
-//     }
-
-//     sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
-
-//     if (sqlite3_step(stmt) == SQLITE_ROW) {
-//         const char* path = (const char *)sqlite3_column_text(stmt, 0);
-//         strncpy(fs->path, path, strlen(path));
-//         fs->uid = sqlite3_column_int(stmt, 1);
-//         fs->gid = sqlite3_column_int(stmt, 2);
-//         fs->mode = sqlite3_column_int(stmt, 3);
-//         rc = 0;
-//     } else {
-//         rc = 1;
-//     }
-
-//     sqlite3_finalize(stmt);
-//     return rc;
-// }
-
-// void record_file_stat(const char *path, int uid, int gid, int mode, int sysnum) {
-//     struct fakestat fs = {.path={},.uid = uid,.gid = gid,.mode = -1};
-//     strncpy(fs.path, path, strlen(path));
-//     struct fakestat fs1;
-//     int exist = query_file_state(path, &fs1);
-//     struct stat stat_info;
-//     int status = stat(fs.path, &stat_info);
-//     if (status != 0) {
-//         perror("stat");
-//         return;
-//     }
-//     if (mode == -1) {
-//         if (0 == exist) {
-//             fs.mode = fs1.mode & 0777;
-//         } else {
-//             fs.mode = stat_info.st_mode & 0777;
-//         }
-//     } else {
-//         fs.mode = mode & 0777;
-//     }
-//     if (uid == -1) {
-//         if (0 == exist) {
-// 			fs.uid = fs1.uid;
-// 			fs.gid = fs1.gid;
-// 		} else {
-//             fs.uid = stat_info.st_uid;
-// 			fs.gid = stat_info.st_gid;
-//         }
-//     }
-//     insert_or_update_file_state(&fs);
-// }
-
-
 
 char *fd_to_path(pid_t pid, int fd) {
     char proc_path[PATH_MAX];
@@ -260,16 +274,6 @@ char *fd_to_path(pid_t pid, int fd) {
     return real_path;
 }
 
-// // 哈希函数
-// unsigned int hash_key(const override_key_t *key) {
-//     // 简单的哈希函数，结合 dev 和 inode
-//     return (unsigned int)(key->dev) ^ (unsigned int)(key->inode);
-// }
-// // 比较函数
-// int compare_keys(const override_key_t *a, const override_key_t *b) {
-//     return (a->dev == b->dev) && (a->inode == b->inode);
-// }
-
 // 查找函数
 bool get_map(dev_t dev, unsigned long inode, stat_override_t* stat) {
     override_key_t key = {dev, inode};
@@ -282,19 +286,41 @@ bool get_map(dev_t dev, unsigned long inode, stat_override_t* stat) {
     return false;
 }
 
-// 设置函数
-void set_map(const stat_override_t *stat) {
-    file_hash_entry_t tmp, *entry;
-    tmp.key.dev = stat->dev;
-    tmp.key.inode = stat->inode;
-    HASH_FIND(hh, map_hash, &tmp.key, sizeof(override_key_t), entry);
-    if (stat->uid == 5) {
-        int nn=0;
-        nn++;
+bool get_map_with_path(const char* path, stat_override_t* stat) {
+    file_hash_entry_t *current_entry = NULL, *tmp = NULL;
+    HASH_ITER(hh, map_hash, current_entry, tmp) {
+        const stat_override_t *override = &current_entry->value;
+        if (0==strcmp(override->path,path)) {
+            memcpy(stat, override, sizeof(stat_override_t));
+            return true;
+        }
     }
+    return false;
+}
+
+// 设置函数
+void set_map(const stat_override_t *stat1) {
+    // if (strstr(stat1->path,"usr/bin/systemd-cat")) {
+    //     fprintf(stderr, "set_map %s\n", stat1->path);
+    // }
+    file_hash_entry_t tmp, *entry, *entry1;
+    tmp.key.dev = stat1->dev;
+    tmp.key.inode = stat1->inode;
+    HASH_FIND(hh, map_hash, &tmp.key, sizeof(override_key_t), entry);
     if (entry != NULL) {
         // 如果键已存在，更新值
-        memcpy(&entry->value, stat, sizeof(stat_override_t));
+        if (strstr(entry->value.path,"usr/bin/systemd-cat")) {
+            fprintf(stderr, "%s->%s\n", entry->value.path, stat1->path);
+            if (strstr(stat1->path,"systemd-cgls")) {
+                int nn =0;
+                nn++;
+            }
+        }
+        memcpy(&entry->value, stat1, sizeof(stat_override_t));
+        // if (strstr(stat1->path,"usr/bin/systemd-cat")) {
+        //     HASH_FIND(hh, map_hash, &tmp.key, sizeof(override_key_t), entry1);
+        //     fprintf(stderr, "after: %s\n", entry1->value.path);
+        // }
     } else {
         // 如果键不存在，创建新条目
         entry = (file_hash_entry_t *)malloc(sizeof(file_hash_entry_t));
@@ -303,9 +329,9 @@ void set_map(const stat_override_t *stat) {
             return;
         }
         memset(entry, 0, sizeof(file_hash_entry_t));
-        entry->key.dev = stat->dev;
-        entry->key.inode = stat->inode;
-        memcpy(&entry->value, stat, sizeof(stat_override_t));
+        entry->key.dev = stat1->dev;
+        entry->key.inode = stat1->inode;
+        memcpy(&entry->value, stat1, sizeof(stat_override_t));
         HASH_ADD(hh, map_hash, key, sizeof(override_key_t), entry);
     }
 }
@@ -335,6 +361,88 @@ int fstat_proc_pid_fd(pid_t pid, int fd, struct stat* st) {
     return stat(link, st);
 }
 
+bool getcwd_pid(pid_t pid, char dir_path[PATH_MAX]) {
+    char cwd_path[PATH_MAX] = {0};
+    snprintf(cwd_path, sizeof(cwd_path), "/proc/%d/cwd",  pid);
+    char symlink_path[PATH_MAX] = {0};
+    char *real_path = NULL;
+
+  // 读取符号链接的目标路径
+    if (readlink(cwd_path, symlink_path, sizeof(symlink_path) - 1) != -1) {
+        symlink_path[sizeof(symlink_path) - 1] = '\0';
+        real_path = realpath(symlink_path, NULL);
+        strncpy(dir_path, real_path, strlen(real_path));
+        return true;
+    }
+    return false;
+}
+
+bool get_fullpath(pid_t pid, char result[PATH_MAX], int dirfd, const char *user_path) {
+    if (user_path[0] == '/') {
+		strncpy(result, user_path, strlen(user_path));
+	} else {
+        char dir_path[PATH_MAX] = {0};
+        int status = 0;
+        if (dirfd == AT_FDCWD) {
+            status = getcwd_pid(pid, dir_path);
+        } else {
+            status = readlink_proc_pid_fd(pid, dirfd, dir_path);
+        }
+        if (status < 0) {
+            fprintf(stderr, "get_fullpath failed.\n");
+            return false;
+        }
+        if (dir_path[0] != 0) {
+            snprintf(result, PATH_MAX, "%s/%s", dir_path, user_path);
+        } else {
+            snprintf(result, PATH_MAX, "%s", user_path);
+        }
+    }
+    return true;
+}
+
+int fstatat_proc_pid_fd(pid_t pid, int dfd, const char* filename, struct stat* st, int flag) {
+    // if (strlen(filename) == 0 ) {
+    //     fprintf(stderr, "fstatat_proc_pid_fd filename is empty.\n");
+    //     return -1;
+    // }
+    //
+    char dir_path[PATH_MAX] = {0};
+    int status = 0;
+    if (dfd == AT_FDCWD) {
+        status = getcwd_pid(pid, dir_path);
+    } else {
+        status = readlink_proc_pid_fd(pid, dfd, dir_path);
+    }
+    if (status < 0 || strlen(dir_path) == 0) {
+        fprintf(stderr, "get_fullpath dfd: %d, filename: %s failed.\n", dfd, filename);
+        return -1;
+    }
+    int pfd = open(dir_path, O_RDONLY);
+    if (pfd == -1) {
+        fprintf(stderr, "get_fullpath open dir %s failed.\n", dir_path);
+        return -1;
+    }
+    int ret = fstatat(pfd, filename, &st, flag);
+    // char fullname[PATH_MAX] = {0};
+    // bool rt = get_fullpath(pid, fullname, dfd, filename);
+    // if (!rt) {
+    //     fprintf(stderr, "get_fullpath failed.\n");
+    //     return false;
+    // }
+    if (ret < 0) {        
+        fprintf(stderr, "fstatat pfd: %d, filename: %s error: %s.\n", pfd, filename, strerror(errno));
+        close(pfd);
+        return ret;
+    }
+    close(pfd);
+    // if (NULL != strstr(filename, "etc/alternatives/which")) {
+    //     int nn = 0;
+    //     nn++;
+    // }
+    return ret;
+}
+
 bool real_open(Tracee *tracee, Config *config, const char* fullpath, int mode_argnum) {
 	word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 	if ((int) result < 0) {// 打开失败了
@@ -361,6 +469,7 @@ bool real_open(Tracee *tracee, Config *config, const char* fullpath, int mode_ar
 
 		set_map( &override );
 	}
+    return true;
 }
 /*
 int sys_open(const char *path, int flags, mode_t mode)
@@ -373,11 +482,13 @@ bool sys_open(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     //fprintf(stderr, "open(%s)\n", filename);
 	return real_open(tracee, config, filename, SYSARG_3);
 }
+
 /*
 int sys_openat(int dirfd, const char *path, int flags, mode_t mode)
 */
@@ -387,31 +498,19 @@ bool sys_openat(Tracee *tracee, Config *config) {
 		return;
 	}
     int dirfd = peek_reg(tracee, ORIGINAL, SYSARG_1);
-    char path[PATH_MAX];
+    char path[PATH_MAX] = {0};
     int status = get_sysarg_path(tracee, path, SYSARG_2);
      if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     char pathname[PATH_MAX] = {0};
-    if (dirfd == AT_FDCWD) {
-		strncpy(pathname, path, strlen(path));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dirfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, path);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, dirfd, path);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
     //fprintf(stderr, "openat(%s)\n", pathname);
-    if (NULL!=strstr(pathname, "etc/bash.bashrc")) {
-        int n=0;
-        n++;
-    }
 	return real_open(tracee, config, pathname, SYSARG_4);
 }
 
@@ -426,6 +525,7 @@ bool sys_creat(Tracee *tracee, Config *config) {
     char pathname[PATH_MAX];
     int status = get_sysarg_path(tracee, pathname, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
 	mode_t mode = peek_reg(tracee, ORIGINAL, SYSARG_2);
@@ -449,6 +549,7 @@ bool sys_creat(Tracee *tracee, Config *config) {
 
 		set_map( &override );
 	}
+    return true;
 }
 
 
@@ -475,6 +576,7 @@ bool real_mknod(Tracee *tracee, Config *config, const char* fullpath, int mode_o
 
 		set_map( &override );
 	}
+    return true;
 }
 /*
 long sys_mknod(const char *path, mode_t mode, dev_t dev)
@@ -487,12 +589,13 @@ bool sys_mknod(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = stat(filename, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_mknod, stat %s err: %s.\n", filename, strerror(errno));
         return false;
     }
 	return real_mknod(tracee, config, filename, SYSARG_2, &stat1, -1);
@@ -509,29 +612,21 @@ bool sys_mknodat(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
 	int status = get_sysarg_path(tracee, filename, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
-    status = fstatat(dfd, filename, &stat1, 0);
+    status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, 0);
     if (status < 0) {
-        perror("fstatat");
+        fprintf(stderr, "sys_mknodat err\n");
         return false;
     }
     //
     char pathname[PATH_MAX] = {0};
-    if (dfd == AT_FDCWD) {
-		strncpy(pathname, filename, strlen(filename));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, filename);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, dfd, filename);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
 	return real_mknod(tracee, config, pathname, SYSARG_3, &stat1, 0);
 }
@@ -575,6 +670,7 @@ bool real_chmod(Tracee *tracee, Config *config, const char* fullpath, int mode_o
         override.mode=(override.mode&~07777)|(mode&07777);
         set_map( &override );
     // }
+    return true;
 }
 
 /*
@@ -588,12 +684,13 @@ bool sys_chmod(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = stat(filename, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_chmod, stat %s err: %s.\n", filename, strerror(errno));
         return false;
     }
 	return real_chmod(tracee, config, filename, SYSARG_2, &stat1, -1);
@@ -610,7 +707,7 @@ bool sys_fchmod(Tracee *tracee, Config *config) {
     struct stat stat1;
     int status = fstat_proc_pid_fd(tracee->pid, fd, &stat1);
     if (status < 0) {
-        perror("fstat");
+        fprintf(stderr, "sys_fchmod, fstat_proc_pid_fd error.");
         return false;
     }
     char* filepath = fd_to_path(tracee->pid, fd);
@@ -629,29 +726,21 @@ bool sys_fchmodat(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
 	int status = get_sysarg_path(tracee, filename, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
-    status = fstatat(dfd, filename, &stat1, 0);
+    status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, 0);
     if (status < 0) {
-        perror("fstatat");
+        fprintf(stderr, "sys_fchmodat err\n");
         return false;
     }
     //
     char pathname[PATH_MAX] = {0};
-    if (dfd == AT_FDCWD) {
-		strncpy(pathname, filename, strlen(filename));
-	} else {
-        // 获取 dfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, filename);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, dfd, filename);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
 	return real_chmod(tracee, config, pathname, SYSARG_3, &stat1, 0);
 }
@@ -674,6 +763,7 @@ bool real_chown(Tracee *tracee, Config *config, const char* fullpath, int own_of
         override.gid = gid;
   
     set_map( &override );
+    return true;
 }
 /*
 sys_chown(const char __user *filename,
@@ -687,12 +777,13 @@ bool sys_chown(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = stat(filename, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_chown, stat %s err: %s.\n", filename, strerror(errno));
         return false;
     }
 	return real_chown(tracee, config, filename, SYSARG_2, &stat1, -1);
@@ -710,7 +801,7 @@ bool sys_fchown(Tracee *tracee, Config *config) {
     struct stat stat1;
     int status = fstat_proc_pid_fd(tracee->pid, fd, &stat1);
     if (status < 0) {
-        perror("fstat");
+        fprintf(stderr, "sys_fchown, fstat_proc_pid_fd error.");
         return false;
     }
     //
@@ -729,12 +820,13 @@ bool sys_lchown(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = lstat(filename, &stat1);
     if (status < 0) {
-        perror("lstat");
+        fprintf(stderr, "sys_lchown, lstat %s err: %s.", filename, strerror(errno));
         return false;
     }
 	return real_chown(tracee, config, filename, SYSARG_2, &stat1, -1);
@@ -752,30 +844,22 @@ bool sys_fchownat(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
 	int status = get_sysarg_path(tracee, filename, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     int flag = peek_reg(tracee, ORIGINAL, SYSARG_5);
     struct stat stat1;
-    status = fstatat(dfd, filename, &stat1, flag);
+    status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, flag);
     if (status < 0) {
-        perror("fstatat");
+        fprintf(stderr, "sys_fchownat err\n");
         return false;
     }
     //
     char pathname[PATH_MAX] = {0};
-    if (dfd == AT_FDCWD) {
-		strncpy(pathname, filename, strlen(filename));
-	} else {
-        // 获取 dfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, filename);
-        }
+    bool rt = get_fullpath(tracee->pid, pathname, dfd, filename);
+    if (!rt) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
 	return real_chown(tracee, config, pathname, SYSARG_3, &stat1, flag);
 }
@@ -792,6 +876,7 @@ bool real_mkdir(Tracee *tracee, Config *config, const char* fullpath, int mode_o
     // XXX This code does not take the umask into account
 
     set_map( &override );
+    return true;
 }
 /*
 long sys_mkdir(const char __user *pathname, umode_t mode);
@@ -804,12 +889,13 @@ bool sys_mkdir(Tracee *tracee, Config *config) {
     char newname[PATH_MAX];
 	int status = get_sysarg_path(tracee, newname, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = stat(newname, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_mkdir, stat %s err: %s.\n", newname, strerror(errno));
         return false;
     }
 	return real_mkdir(tracee, config, newname, SYSARG_2, &stat1, -1);
@@ -826,29 +912,21 @@ bool sys_mkdirat(Tracee *tracee, Config *config) {
     char filename[PATH_MAX];
 	int status = get_sysarg_path(tracee, filename, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
-    status = fstatat(dirfd, filename, &stat1, 0);
+    status = fstatat_proc_pid_fd(tracee->pid, dirfd, filename, &stat1, 0);
     if (status < 0) {
-        perror("fstatat");
+        fprintf(stderr, "sys_mkdirat err\n");
         return false;
     }
     //
     char pathname[PATH_MAX] = {0};
-    if (dirfd == AT_FDCWD) {
-		strncpy(pathname, filename, strlen(filename));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dirfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, filename);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, dirfd, filename);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
 	return real_mkdir(tracee, config, pathname, SYSARG_3, &stat1, 0);
 }
@@ -876,12 +954,13 @@ bool sys_symlink(Tracee *tracee, Config *config) {
     char newname[PATH_MAX];
 	int status = get_sysarg_path(tracee, newname, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = lstat(newname, &stat1);
     if (status < 0) {
-        perror("lstat");
+        fprintf(stderr, "sys_symlink, lstat %s err: %s.", newname, strerror(errno));
         return false;
     }
 	return real_symlink(tracee, config, newname, SYSARG_2, &stat1, -1);
@@ -899,29 +978,21 @@ bool sys_symlinkat(Tracee *tracee, Config *config) {
     char newname[PATH_MAX];
 	int status = get_sysarg_path(tracee, newname, SYSARG_3);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
-    status = fstatat(newdfd, newname, &stat1, AT_SYMLINK_NOFOLLOW);
+    status = fstatat_proc_pid_fd(tracee->pid, newdfd, newname, &stat1, AT_SYMLINK_NOFOLLOW );
     if (status < 0) {
-        perror("fstatat");
+        fprintf(stderr, "sys_symlinkat err\n");
         return false;
     }
     //
     char pathname[PATH_MAX] = {0};
-    if (newdfd == AT_FDCWD) {
-		strncpy(pathname, newname, strlen(newname));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, newdfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, newname);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, newdfd, newname);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
 	return real_symlink(tracee, config, pathname, SYSARG_2, &stat1, AT_SYMLINK_NOFOLLOW);
 }
@@ -936,24 +1007,25 @@ bool sys_unlink(Tracee *tracee, Config *config) {
     char rel_path[PATH_MAX];
 	int status = get_sysarg_path(tracee, rel_path, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
-	status = stat(rel_path, &stat1);
-	if (status < 0) {
-        perror("stat");
-        return false;
-    }
+    // struct stat stat1;
+	// status = stat(rel_path, &stat1);
+	// if (status < 0) {
+    //     fprintf(stderr, "sys_unlink, stat %s err: %s.\n", rel_path, strerror(errno));
+    //     return false;
+    // }
     // Need to erase the override from our database
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
+    // override_key_t key;
+    // key.dev=stat1.st_dev;
+    // key.inode=stat1.st_ino;
     stat_override_t map = {0};
-
-    if( get_map( key.dev, key.inode, &map ) ) {
+    if( get_map_with_path( rel_path, &map ) ) {
         map.transient=true;
         set_map( &map );
     }
+    return true;
 }
 
 /* long sys_unlinkat(int dfd, const char __user * pathname, int flag); */
@@ -966,35 +1038,29 @@ bool sys_unlinkat(Tracee *tracee, Config *config) {
     char rel_path[PATH_MAX];
 	int status = get_sysarg_path(tracee, rel_path, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
+    //
     char pathname[PATH_MAX] = {0};
-    if (dirfd == AT_FDCWD) {
-		strncpy(pathname, rel_path, strlen(rel_path));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, dirfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, rel_path);
-        }
-    }
-    struct stat stat1;
-	status = stat(pathname, &stat1);
-	if (status < 0) {
-        perror("stat");
+    bool flag = get_fullpath(tracee->pid, pathname, dirfd, rel_path);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
         return false;
     }
-    // Need to erase the override from our database
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
+    // struct stat stat1;
+    // status = fstatat_proc_pid_fd(tracee->pid, dirfd, rel_path, &stat1, 0);
+	// // status = stat(pathname, &stat1);
+	// if (status < 0) {
+    //     fprintf(stderr, "sys_unlinkat, stat %s err: %s.\n", rel_path, strerror(errno));
+    //     return false;
+    // }
+    // // Need to erase the override from our database
+    // override_key_t key;
+    // key.dev=stat1.st_dev;
+    // key.inode=stat1.st_ino;
     stat_override_t map = {0};
-    if( get_map( key.dev, key.inode, &map ) ) {
+    if( get_map_with_path(pathname, &map ) ) {
         map.transient=true;
         set_map( &map );
     }
@@ -1011,22 +1077,24 @@ bool sys_rmdir(Tracee *tracee, Config *config) {
     char rel_path[PATH_MAX];
 	int status = get_sysarg_path(tracee, rel_path, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
-	status = stat(rel_path, &stat1);
-	if (status < 0) {
-        perror("stat");
-        return false;
-    }
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
+    // struct stat stat1;
+	// status = stat(rel_path, &stat1);
+	// if (status < 0) {
+    //     fprintf(stderr, "sys_rmdir, stat %s err: %s.\n", rel_path, strerror(errno));
+    //     return false;
+    // }
+    // override_key_t key;
+    // key.dev=stat1.st_dev;
+    // key.inode=stat1.st_ino;
     stat_override_t map;
-    if(get_map( key.dev, key.inode, &map ) ) {
+    if(get_map_with_path( rel_path, &map ) ) {
         map.transient=true;
         set_map( &map );
-    }  
+    } 
+    return true;
 }
 
 
@@ -1051,6 +1119,7 @@ bool real_setxattr(Tracee *tracee, Config *config, const char* fullpath, int nam
     char name[PATH_MAX] = {0};
     int status = get_sysarg_path(tracee, name, name_offset);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     size_t size = peek_reg(tracee, ORIGINAL, name_offset+2);
@@ -1080,9 +1149,10 @@ bool real_setxattr(Tracee *tracee, Config *config, const char* fullpath, int nam
         if( !get_map( stat1.st_dev, stat1.st_ino, &override ) ) {
             stat_override_copy(&stat1, fullpath, &override);
         }
-        sprintf(override.caps,"%u", capabilities);
+        sprintf(override.caps, "%lu", capabilities);
         set_map(&override);
     }
+    return true;
 }
 
 
@@ -1098,6 +1168,7 @@ bool sys_setxattr(Tracee *tracee, Config *config) {
     char path[PATH_MAX] = {0};
 	int status = get_sysarg_path(tracee, path, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     return real_setxattr(tracee, config, path, SYSARG_2);
@@ -1115,6 +1186,7 @@ bool sys_lsetxattr(Tracee *tracee, Config *config) {
     char path[PATH_MAX] = {0};
 	int status = get_sysarg_path(tracee, path, SYSARG_1);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     return real_setxattr(tracee, config, path, SYSARG_2);
@@ -1135,7 +1207,7 @@ bool sys_fsetxattr(Tracee *tracee, Config *config) {
     struct stat stat1;
     int status = fstat_proc_pid_fd(tracee->pid, fd, &stat1);
       if (status < 0) {
-        perror("fstat");
+        fprintf(stderr, "sys_fsetxattr, fstat_proc_pid_fd error.\n");
         return false;
     }
     //
@@ -1153,23 +1225,25 @@ bool sys_rename(Tracee *tracee, Config *config) {
     char newpath[PATH_MAX];
 	int status = get_sysarg_path(tracee, newpath, SYSARG_2);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
     struct stat stat1;
     status = stat(newpath, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_rename, stat %s err: %s.\n", newpath, strerror(errno));
         return false;
     }
     override_key_t key;
     key.dev=stat1.st_dev;
     key.inode=stat1.st_ino;
-    stat_override_t map;
-    if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
-        stat_override_t override = {0};
-        stat_override_copy(&stat1, newpath, &override);
-        set_map( &map );
-    }
+    //stat_override_t map;
+    //if(!get_map(key.dev, key.inode, &map )) {// 应该是存在的
+    stat_override_t override = {0};
+    stat_override_copy(&stat1, newpath, &override);
+    set_map( &override );
+    //}
+    return true;
 }
 /*
 int renameat(int olddirfd, const char *oldpath,
@@ -1183,44 +1257,123 @@ bool sys_renameat(Tracee *tracee, Config *config) {
 		return false;
 	}
     int newdirfd = peek_reg(tracee, ORIGINAL, SYSARG_3);
-    char newpath[PATH_MAX];
+    char newpath[PATH_MAX] = {0};
 	int status = get_sysarg_path(tracee, newpath, SYSARG_4);
     if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
+    //uint32_t flags = peek_reg(tracee, ORIGINAL, SYSARG_5);
+    //
+    struct stat stat1;
+	status = fstatat_proc_pid_fd(tracee->pid, newdirfd, newpath, &stat1, 0);
+	if (status < 0) {
+        fprintf(stderr, "sys_renameat, fstatat_proc_pid_fd %s err.\n", newpath);
+		return 0;
+    }
+    //
     char pathname[PATH_MAX] = {0};
-    if (newdirfd == AT_FDCWD) {
-		strncpy(pathname, newpath, strlen(newpath));
-	} else {
-        // 获取 dirfd 对应的目录路径
-        char dir_path[PATH_MAX];
-        status = readlink_proc_pid_fd(tracee->pid, newdirfd, dir_path);
-        if (status < 0) {
-            return false;
-        }
-        if (dir_path[0] != 0) {
-            // 拼接目录路径和相对路径
-            snprintf(pathname, PATH_MAX, "%s/%s", dir_path, newpath);
-        }
+    bool flag = get_fullpath(tracee->pid, pathname, newdirfd, newpath);
+    // if (!flag) {
+    //     fprintf(stderr, "get_fullpath failed.\n");
+    //     return false;
+    // }
+    // struct stat stat1;
+    // status = stat(pathname, &stat1);
+    // if (status < 0) {
+    //     perror("stat");
+    //     fprintf(stderr, "sys_renameat, stat %s error.\n", pathname);
+    //     return false;
+    // }
+    override_key_t key;
+    key.dev=stat1.st_dev;
+    key.inode=stat1.st_ino;
+    //stat_override_t map;
+    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
+    stat_override_t override = {0};
+    stat_override_copy(&stat1, pathname, &override);
+    //}
+    set_map( &override );
+    return true;
+}
+
+/*
+int link(const char *oldpath, const char *newpath);
+*/
+bool sys_link(Tracee *tracee, Config *config) {
+    word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
+	if ((int) result < 0) {
+		return false;
+	}
+    char newpath[PATH_MAX];
+	int status = get_sysarg_path(tracee, newpath, SYSARG_2);
+    if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
+        return false;
+    }
+    struct stat stat1;
+    status = stat(newpath, &stat1);
+    if (status < 0) {
+        fprintf(stderr, "sys_link, stat %s err: %s.\n", newpath, strerror(errno));
+        return false;
+    }
+    override_key_t key;
+    key.dev=stat1.st_dev;
+    key.inode=stat1.st_ino;
+    //stat_override_t map;
+    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
+    stat_override_t override = {0};
+    stat_override_copy(&stat1, newpath, &override);
+    set_map( &override );
+    //}
+    return true;
+}
+/*
+int linkat(int olddirfd, const char *oldpath,
+                  int newdirfd, const char *newpath, int flags);
+*/
+bool sys_linkat(Tracee *tracee, Config *config) {
+    word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
+	if ((int) result < 0) {// 删除失败
+		return false;
+	}
+    int newdirfd = peek_reg(tracee, ORIGINAL, SYSARG_3);
+    char newpath[PATH_MAX] = {0};
+	int status = get_sysarg_path(tracee, newpath, SYSARG_4);
+    if (status < 0) {
+        fprintf(stderr, "get_sysarg_path failed.\n");
+        return false;
+    }
+    //
+    char pathname[PATH_MAX] = {0};
+    bool flag = get_fullpath(tracee->pid, pathname, newdirfd, newpath);
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
     }
     struct stat stat1;
     status = stat(pathname, &stat1);
     if (status < 0) {
-        perror("stat");
+        fprintf(stderr, "sys_linkat, stat %s err: %s.\n", pathname, strerror(errno));
         return false;
     }
     override_key_t key;
     key.dev=stat1.st_dev;
     key.inode=stat1.st_ino;
     stat_override_t map;
-    if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
-        stat_override_t override = {0};
-        stat_override_copy(&stat1, pathname, &override);
-        set_map( &map );
-    }
+    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
+    stat_override_t override = {0};
+    stat_override_copy(&stat1, pathname, &override);
+    set_map( &override );
+    //}
+    return true;
 }
 
 bool lie_database(Tracee *tracee, Config *config, word_t sysnum) {
+    word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
+	if ((int) result < 0) {
+		return true;
+	}
 	switch (sysnum) {
         case PR_creat:
             return sys_creat(tracee, config);
@@ -1273,247 +1426,16 @@ bool lie_database(Tracee *tracee, Config *config, word_t sysnum) {
             return sys_renameat(tracee, config);
         case PR_rename:
             return sys_rename(tracee, config);
+        case PR_link:
+            return sys_link(tracee, config);
+        case PR_linkat:
+            return sys_linkat(tracee, config);
         default:
             break;
 	}
     return true;
-		// case PR_link: // 不产生lie data
-		// case PR_linkat:  // 不产生lie data
 }
-		// {
-		//     // if (tracee->state_file != NULL) {
-		// 	// 	char* pathname = resovle_path(tracee, sysnum);
-		// 	// 	if (pathname && config) {
-		// 	// 		//if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
-		// 	// 			record_file_stat(pathname, -1, -1, 0777, sysnum);
-		// 	// 		//}
-		// 	// 	}
-		// 	// }
-		// 	// return 0;
-		// }
-	/*
-	///////////////////
-		if (tracee->status != 0 && tracee->state_file != NULL) {
-			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname && config) {
-				//if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
-					Reg mode_sysarg;
-					mode_t st_mode;
-					if (sysnum == PR_chmod || sysnum == PR_fchmod) {
-						mode_sysarg = SYSARG_2;
-					} else {
-						mode_sysarg = SYSARG_3;
-					}
-					st_mode = peek_reg(tracee, ORIGINAL, mode_sysarg);
-					record_file_stat(pathname, -1, -1, st_mode, sysnum);
-				//}
-			}
-		}
-	*/
-
-	/*
-	if (tracee->status != 0 && tracee->state_file != NULL) {
-			char* pathname = resovle_path(tracee, sysnum);
-			if (pathname && config) {
-				//if (strncmp(pathname, config->root_path, strlen(config->root_path)) == 0 ){
-					Reg uid_sysarg;
-					Reg gid_sysarg;
-					uid_t uid;
-					gid_t gid;
-					if (sysnum == PR_fchownat) {
-						uid_sysarg = SYSARG_3;
-						gid_sysarg = SYSARG_4;
-					}
-					else {
-						uid_sysarg = SYSARG_2;
-						gid_sysarg = SYSARG_3;
-					}
-		
-					uid = peek_reg(tracee, ORIGINAL, uid_sysarg);
-					gid = peek_reg(tracee, ORIGINAL, gid_sysarg);
-					record_file_stat(pathname, uid,  gid, -1, sysnum);
-				//}
-				free(pathname);	
-			}
-		}
-	*/
 
 
 
-/*
-struct fakestat fs = {.path={},.uid = -1,.gid = -1,.mode = -1};
-					strncpy(fs.path, pathname, strlen(pathname));
-					fs.mode = st_mode & 0777;
-					struct fakestat fs1;
-					if (0 == exist) {
-						fs.uid = fs1.uid;
-						fs.gid = fs1.gid;
-					} else {
-						struct stat mode;
-						stat(pathname, &mode);
-						fs.uid = mode.st_uid;
-						fs.gid = mode.st_gid;
-					}		
-					if (0 == insert_or_update_file_state(&fs) ){
-						fprintf(stderr, "chmod_enter:%s,pathname=%s, uid=%d, gid=%d, mode=0%o\n", 
-						stringify_sysnum(sysnum),pathname,fs.uid,fs.gid,fs.mode);
-					} else {
-						fprintf(stderr, "!chmod_enter:%s,pathname=%s\n", stringify_sysnum(sysnum),pathname);
-					}
 
-*/
-
-
-// 删除数据
-// int delete_file_state(const char *path) {
-//     if (!path) {
-//         fprintf(stderr, "Invalid input\n");
-//         return 1;
-//     }
-
-//     const char *sql = "DELETE FROM file_state WHERE path = ?;";
-//     sqlite3_stmt *stmt;
-
-//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-//     if (rc != SQLITE_OK) {
-//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-//         return 1;
-//     }
-
-//     sqlite3_bind_text(stmt, 1, path, -1, SQLITE_STATIC);
-
-//     rc = sqlite3_step(stmt);
-//     if (rc != SQLITE_DONE) {
-//         fprintf(stderr, "SQL step error: %s\n", sqlite3_errmsg(state_db));
-//         sqlite3_finalize(stmt);
-//         return 1;
-//     }
-
-//     sqlite3_finalize(stmt);
-//     return 0;
-// }
-
-// 查询所有数据
-// int query_all_file_states(struct fakestat **fs_list, int *count) {
-//     if (!fs_list || !count) {
-//         fprintf(stderr, "Invalid input\n");
-//         return 1;
-//     }
-
-//     *count = 0;
-//     *fs_list = NULL;
-
-//     const char *sql = "SELECT path, uid, gid, mode FROM file_state;";
-//     sqlite3_stmt *stmt;
-
-//     int rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-//     if (rc != SQLITE_OK) {
-//         fprintf(stderr, "SQL prepare error: %s\n", sqlite3_errmsg(state_db));
-//         return 1;
-//     }
-
-//     while (sqlite3_step(stmt) == SQLITE_ROW) {
-//         struct fakestat *temp = realloc(*fs_list, (*count + 1) * sizeof(struct fakestat));
-//         if (!temp) {
-//             fprintf(stderr, "Memory allocation failed\n");
-//             sqlite3_finalize(stmt);
-//             free(*fs_list);
-//             *fs_list = NULL;
-//             *count = 0;
-//             return 1;
-//         }
-
-//         *fs_list = temp;
-//         const char* path = (const char *)sqlite3_column_text(stmt, 0);
-//         strncpy((*fs_list)[*count].path, path, strlen(path));
-//         (*fs_list)[*count].uid = sqlite3_column_int(stmt, 1);
-//         (*fs_list)[*count].gid = sqlite3_column_int(stmt, 2);
-//         (*fs_list)[*count].mode = sqlite3_column_int(stmt, 3);
-//         (*count)++;
-//     }
-
-//     sqlite3_finalize(stmt);
-//     return 0;
-// }
-
-// int close_database() {
-//     if (state_db) {
-//         sqlite3_close(state_db);
-//         state_db = NULL;
-//     }
-// }
-
-
- // // 准备查询语句
-    // sqlite3_stmt *stmt;
-    // const char *sql = "SELECT dev, ino, mode, uid, gid, nlink, rdev FROM file_state;";
-
-    // rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-    // if (rc != SQLITE_OK) {
-    //     fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(state_db));
-    //     sqlite3_close(state_db);
-    //     return 1;
-    // }
-
-    // // 执行查询并读取结果
-    // while (sqlite3_step(stmt) == SQLITE_ROW) {
-    //     struct fakestat st;
-
-    //     st.dev = sqlite3_column_int64(stmt, 0);
-    //     st.ino = sqlite3_column_int64(stmt, 1);
-    //     st.mode = sqlite3_column_int(stmt, 2);
-    //     st.uid = sqlite3_column_int(stmt, 3);
-    //     st.gid = sqlite3_column_int(stmt, 4);
-    //     st.nlink = sqlite3_column_int(stmt, 5);
-    //     st.rdev = sqlite3_column_int64(stmt, 6);
-
-    //     // 将读取的文件状态插入到数据结构中
-    //     data_insert(&st, remote);
-    // }
-
-    // // 释放资源
-    // sqlite3_finalize(stmt);
-    // sqlite3_close(state_db);
-
-
-    // int save_database(const uint32_t remote) {
-//     int rc;
-//     // 准备插入语句
-//     const char *sql = "INSERT OR REPLACE INTO file_state (dev, ino, mode, uid, gid, nlink, rdev) VALUES (?, ?, ?, ?, ?, ?, ?);";
-//     sqlite3_stmt *stmt;
-
-//     rc = sqlite3_prepare_v2(state_db, sql, -1, &stmt, 0);
-//     if (rc != SQLITE_OK) {
-//         fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(state_db));
-//         sqlite3_close(state_db);
-//         return 1;
-//     }
-
-//     // 遍历数据并插入到数据库
-//     data_node_t *i;
-//     for (i = data_begin(); i != data_end(); i = data_node_next(i)) {
-//         if (i->remote != remote)
-//             continue;
-
-//         sqlite3_reset(stmt);
-//         sqlite3_bind_int64(stmt, 1, i->buf.dev);
-//         sqlite3_bind_int64(stmt, 2, i->buf.ino);
-//         sqlite3_bind_int(stmt, 3, i->buf.mode);
-//         sqlite3_bind_int(stmt, 4, i->buf.uid);
-//         sqlite3_bind_int(stmt, 5, i->buf.gid);
-//         sqlite3_bind_int(stmt, 6, i->buf.nlink);
-//         sqlite3_bind_int64(stmt, 7, i->buf.rdev);
-
-//         rc = sqlite3_step(stmt);
-//         if (rc != SQLITE_DONE) {
-//             fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
-//             sqlite3_finalize(stmt);
-//             sqlite3_close(db);
-//             return 1;
-//         }
-//     }
-
-//     // 释放资源
-//     sqlite3_finalize(stmt);
-//     return 0;
-// }

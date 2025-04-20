@@ -22,3 +22,22 @@ SCRIPT_DIR="$(cd -P "$(dirname -- "${SCRIPT_PATH}")" >/dev/null 2>&1 && pwd)"
 sed -i 's/ports.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' ${SCRIPT_DIR}/rootfs/etc/apt/sources.list.d/ubuntu.sources
 sed -i 's/security.ubuntu.com/mirrors.tuna.tsinghua.edu.cn/g' ${SCRIPT_DIR}/rootfs/etc/apt/sources.list.d/ubuntu.sources
 
+# strace -o log.txt
+# cp /usr/bin/qemu-aarch64-static ${SCRIPT_DIR}/rootfs/usr/bin
+# mkdir -p ${SCRIPT_DIR}/rootfs/proc/sys/fs/binfmt_misc
+# unshare --user --mount --map-root-user /bin/bash -c "
+# set -ex
+# mount --rbind /dev ${SCRIPT_DIR}/rootfs/dev
+# mount --rbind /sys ${SCRIPT_DIR}/rootfs/sys
+# mount --rbind /proc ${SCRIPT_DIR}/rootfs/proc
+# ls -al ${SCRIPT_DIR}/rootfs/proc/sys/fs/binfmt_misc
+# chroot ${SCRIPT_DIR}/rootfs /bin/bash -c '
+# cd /root
+# ls -al /var/lib/dpkg/status
+# echo ------------
+# ls -al /var/lib/dpkg/status-old
+# echo ------------
+# /usr/bin/qemu-aarch64-static -strace -D log.txt /usr/bin/dpkg --force-depends  -i systemd_255.4-1ubuntu8.6_arm64.deb
+# '
+# exit 1
+# "

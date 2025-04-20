@@ -370,11 +370,13 @@ Copyright (C) 2023 PRoot Developers, licensed under GPL v2 or later.",
 		.class = "Regular options",
 		.arguments = {
 		  { .name = "-f", .separator = ' ', .value = "command" },
-		  { .name = "--state_file_filter", .separator = '=', .value = "command" },
+		  { .name = "--fsconfig_output", .separator = '=', .value = "command" },
 		  { .name = NULL, .separator = '\0', .value = NULL } },
 		.handler = handle_option_f,
-		.description = "proot state_file_filter of fake state database",
-		.detail = "\t state_file_filter was use for limit fake file state records.",
+		.description = "proot generate fsconfig output of fake state database",
+		.detail = "\t fsconfig_output was use for generate fsconfig, \n\
+\t which support specific fsconfig output filepath and state path root path split by comma\n\
+\t if no filter specific, all fake stat will convert to fsconfig.",
 	},
 	END_OF_OPTIONS,
 	},

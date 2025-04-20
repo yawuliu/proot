@@ -548,7 +548,7 @@ int new_child(Tracee *parent, word_t clone_flags)
 
 	child->qemu = talloc_reference(child, parent->qemu);
 	child->state_file = talloc_reference(child, parent->state_file);
-	child->state_file_filter = talloc_reference(child, parent->state_file_filter);
+	child->fsconfig_output = talloc_reference(child, parent->fsconfig_output);
 	child->glue = talloc_reference(child, parent->glue);
 
 	child->host_ldso_paths  = talloc_reference(child, parent->host_ldso_paths);

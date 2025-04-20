@@ -235,89 +235,6 @@ static void override_permissions(const Tracee *tracee, const char *path, bool is
 }
 
 
-static char* resovle_path(Tracee *tracee, word_t sysnum) {
-	char *path = NULL;
-	if (sysnum == PR_fchownat || sysnum == PR_fstatat64 || sysnum == PR_newfstatat || 
-		sysnum == PR_statx || sysnum == PR_fchmodat ||
-		sysnum == PR_openat || sysnum == PR_mkdirat ||
-		sysnum == PR_linkat || sysnum == PR_renameat || sysnum == PR_symlinkat) {
-		Reg dirfd_sysarg;
-		Reg pathname_sysarg;
-		dirfd_sysarg = SYSARG_1;
-		pathname_sysarg = SYSARG_2;
-		if (sysnum == PR_linkat || sysnum == PR_renameat || sysnum == PR_symlinkat) {
-			dirfd_sysarg = SYSARG_3;
-			pathname_sysarg = SYSARG_4;
-		}
-		int dirfd = peek_reg(tracee, ORIGINAL, dirfd_sysarg);
-		char rel_path[PATH_MAX];
-		int status = get_sysarg_path(tracee, rel_path, pathname_sysarg);
-		if (status < 0) {
-			return NULL;
-		}
-		if (dirfd == AT_FDCWD) {
-			path = strdup(rel_path);
-		}else {
-			// 获取 dirfd 对应的目录路径
-			char dir_path[PATH_MAX];
-			snprintf(dir_path, sizeof(dir_path), "/proc/self/fd/%d", dirfd);
-			
-			char *dir_real_path = (char *)malloc(PATH_MAX);
-			if (readlink(dir_path, dir_real_path, PATH_MAX) == -1) {
-				// perror("readlink");
-				// fprintf(stderr, "readlink: %s, sysnum: %s, fd=%d\n", dir_path, stringify_sysnum(sysnum), dirfd);
-				free(dir_real_path);
-				dir_real_path = NULL;
-			} else {
-				dir_real_path[PATH_MAX - 1] = '\0';
-			}
-			
-			if (dir_real_path) {
-				// 拼接目录路径和相对路径
-				path = (char *)malloc(PATH_MAX);
-				snprintf(path, PATH_MAX, "%s/%s", dir_real_path, rel_path);
-				free(dir_real_path);
-			}
-		}
-	}else if (sysnum == PR_fchown || sysnum == PR_fchown32 || sysnum == PR_fstat || sysnum == PR_fstat64 || sysnum == PR_fchmod) {
-		Reg fd_sysarg;
-		fd_sysarg = SYSARG_1;
-		int fd = peek_reg(tracee, ORIGINAL, fd_sysarg);
-		char proc_path[PATH_MAX];
-        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
-        
-        // 使用 readlink 获取文件路径
-        path = (char *)malloc(PATH_MAX);
-        if (readlink(proc_path, path, PATH_MAX) == -1) {
-			// perror("readlink");
-            // fprintf(stderr, "readlink:%s,sysnum; %s, fd=%d\n", proc_path, stringify_sysnum(sysnum), fd);
-            free(path);
-            path = NULL;
-        } else {
-            // 确保路径以 null 结尾
-            path[PATH_MAX - 1] = '\0';
-        }
-	} else if(sysnum == PR_lchown || sysnum == PR_lchown32 || sysnum == PR_chown || sysnum == PR_chown32 ||
-		sysnum == PR_stat || sysnum == PR_lstat || sysnum == PR_stat64 || sysnum == PR_lstat64|| sysnum == PR_chmod ||
-		sysnum == PR_open || sysnum == PR_creat	|| sysnum == PR_mkdir || 
-		sysnum == PR_link || sysnum == PR_symlink ||
-		sysnum == PR_rename) {
-		Reg path_sysarg;
-		path_sysarg = SYSARG_1;
-		if (sysnum == PR_link || sysnum == PR_symlink || sysnum == PR_rename) {
-			path_sysarg = SYSARG_2;
-		}
-		char rel_path[PATH_MAX];
-		int status = get_sysarg_path(tracee, rel_path, path_sysarg);
-		if (status < 0) {
-			return NULL;
-		}
-		path = strdup(rel_path);
-	} 
-
-	return path;
-}
-
 /**
  * Adjust current @tracee's syscall parameters according to @config.
  * This function always returns 0.
@@ -586,27 +503,6 @@ static int handle_sysenter_end(Tracee *tracee, const Config *config)
 	return 0;							\
 } while (0)
 
-
-static void assign_config_root(Tracee *tracee, Config *config) 
-{
-	if (config && config->root_path[0] == 0) {
-		if (tracee->state_file_filter!=NULL && strlen(tracee->state_file_filter[0]) >0 ) {
-			strncpy(config->root_path, tracee->state_file_filter[0], strlen(tracee->state_file_filter[0]));
-		} else {
-			Binding* binding = get_binding(tracee, GUEST, "/");
-			if (binding) {
-				strncpy(config->root_path, binding->host.path, strlen(binding->host.path));
-				if (config->root_path[strlen(config->root_path)-1] != "/")  {
-					strcat(config->root_path, "/");
-				}
-			}
-		}
-	}
-}
-
-
-
-
 /**
  * Adjust current @tracee's syscall result according to @config.  This
  * function returns -errno if an error occured, otherwise 0.
@@ -616,7 +512,6 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	word_t sysnum;
 	word_t result;
 	int exit_status = 0;
-	assign_config_root(tracee, config);
 	sysnum = get_sysnum(tracee, ORIGINAL);
 	switch (sysnum) {
 	case PR_setuid:
@@ -799,39 +694,15 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		gid = peek_uint32(tracee, address + gid_offset);
 		if (errno != 0)
 			gid = 0; /* Not fatal.  */
-		///////////////
-		int hit = 0;
-		// if (tracee->state_file != NULL) {
-		// 	char *pathname = resovle_path(tracee, sysnum);
-		// 	if (pathname && config) {
-		// 		if(strncmp(pathname, config->root_path, strlen(config->root_path)) == 0) {
-		// 			struct fakestat fs;
-		// 			if (0 == query_file_state(pathname, &fs)) {
-		// 				// fprintf(stderr, "%s, path=%s, uid=%d, gid=%d, mode=0%o\n", stringify_sysnum(sysnum), pathname, fs.uid, fs.gid, fs.mode);
-		// 				// TODO
-		// 				if (uid == getuid())
-		// 					poke_uint32(tracee, address + uid_offset, config->suid);
-		// 				// poke_uint32(tracee, address + uid_offset, fs.uid);
-		// 				// poke_uint32(tracee, address + gid_offset, fs.gid);
-		// 				if (gid == getgid())
-		// 					poke_uint32(tracee, address + gid_offset, config->sgid);
-		// 				// poke_uint32(tracee, address + mode_offset, fs.mode);
-		// 				hit  = 1;
-		// 			}
-		// 		}
-		// 		free(pathname);
-		// 	}
-		// }
 
-		if (hit == 0) {
-			/* Override only if the file is owned by the current user.
-			* Errors are not fatal here.  */
-			if (uid == getuid())
-				poke_uint32(tracee, address + uid_offset, config->suid);
+		/* Override only if the file is owned by the current user.
+		* Errors are not fatal here.  */
+		if (uid == getuid())
+			poke_uint32(tracee, address + uid_offset, config->suid);
 
-			if (gid == getgid())
-				poke_uint32(tracee, address + gid_offset, config->sgid);
-		}
+		if (gid == getgid())
+			poke_uint32(tracee, address + gid_offset, config->sgid);
+
 		goto end;
 	}
 
@@ -876,6 +747,9 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 	}
 end:
 	lie_database(tracee, config, sysnum);
+	// if (!st) {
+	// 	fprintf(stderr, "lie_database err, sysnum: %s\n", stringify_sysnum(sysnum));
+	// }
 	return exit_status;
 }
 

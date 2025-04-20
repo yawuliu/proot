@@ -27,7 +27,7 @@ CFLAGS   += $(shell pkg-config --static --cflags talloc)
 CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
 LDFLAGS  += -Wl,-z,noexecstack
 LDFLAGS  += -Wl,-Bstatic $(shell pkg-config --static --libs talloc) -Wl,-Bdynamic
-LDFLAGS  += $(shell pkg-config --libs sqlite3)
+LDFLAGS  += -Wl,-Bstatic $(shell pkg-config --libs sqlite3) -Wl,-Bdynamic -lm -ldl -lz -lpthread
 # -L/lib/x86_64-linux-gnu -Wl,-Bstatic -ltalloc -lsqlite3
 #-ltalloc $(shell pkg-config --static --libs talloc)
 #$(shell pkg-config --static --libs sqlite3) # -lsqlite3 -lm -ldl -lz -lpthread
@@ -189,6 +189,9 @@ proot: $(OBJECTS)
 
 care: $(OBJECTS) $(CARE_OBJECTS)
 	$(LINK) $(CARE_LDFLAGS)
+
+fakedb2fsconfig: cli/fakedb2fsconfig.o
+	$(LINK)
 
 # Special case to compute which files depend on the auto-generated
 # file "build.h".

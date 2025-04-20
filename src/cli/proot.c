@@ -261,7 +261,7 @@ static int handle_option_s(Tracee *tracee, const Cli *cli UNUSED, const char *va
 	} while (!last);
 	assert(i == nb_args);
 
-	if (!load_map(tracee->state_file[0], 0)) {
+	if (!load_map(tracee->state_file[0])) {
 		note(tracee, ERROR, INTERNAL, "can't load database %s.", tracee->state_file[0]);
 		return -1;
 	}
@@ -298,10 +298,10 @@ static int handle_option_f(Tracee *tracee, const Cli *cli UNUSED, const char *va
 			break;
 	}
 
-	tracee->state_file_filter = talloc_zero_array(tracee, char *, nb_args + 1);
-	if (tracee->state_file_filter == NULL)
+	tracee->fsconfig_output = talloc_zero_array(tracee, char *, nb_args + 1);
+	if (tracee->fsconfig_output == NULL)
 		return -1;
-	//talloc_set_name_const(tracee->state_file_filter, "@state_file_filter");
+	//talloc_set_name_const(tracee->fsconfig_output, "@fsconfig_output");
 
 	i = 0;
 	ptr = value;
@@ -330,12 +330,18 @@ static int handle_option_f(Tracee *tracee, const Cli *cli UNUSED, const char *va
 
 		last = false;
 	next:
-		tracee->state_file_filter[i] = talloc_strndup(tracee->state_file_filter, start, end - start);
-		if (tracee->state_file_filter[i] == NULL)
+		tracee->fsconfig_output[i] = talloc_strndup(tracee->fsconfig_output, start, end - start);
+		if (tracee->fsconfig_output[i] == NULL)
 			return -1;
 		i++;
 	} while (!last);
 	assert(i == nb_args);
+
+
+	if (!set_fsconfig_out(tracee->fsconfig_output[0])) {
+		note(tracee, ERROR, INTERNAL, "can't set fsconfig output %s.", tracee->fsconfig_output[0]);
+		return -1;
+	}
 	return 0;
 }
 
