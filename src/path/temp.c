@@ -10,6 +10,9 @@
 
 #include "cli/note.h"
 
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 /**
  * Return the path to a directory where temporary files should be
  * created.

@@ -27,7 +27,21 @@
             "label": "prepare_tar",
             "command": "build/prepare_tar.sh",
             "problemMatcher": [],
-        },
+        }
+        // {
+        //     "label": "Terminate All Tasks",
+        //     "command": "echo ${input:terminate}",
+        //     "type": "shell",
+        //     "problemMatcher": []
+        // }
     ],
+    // "inputs": [
+    //   {
+    //     "id": "terminate",
+    //     "type": "command",
+    //     "command": "workbench.action.tasks.terminate",
+    //     "args": "terminateAll"
+    //   }
+    // ],
     "version": "2.0.0"
 }

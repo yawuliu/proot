@@ -190,7 +190,7 @@ void translate_syscall_exit(Tracee *tracee)
 
 	/* Set the tracee's errno if an error occured previously during
 	 * the translation. */
-	int tracee_status = tracee->status;
+	// int tracee_status = tracee->status;
 	if (tracee->status < 0) {
 		poke_reg(tracee, SYSARG_RESULT, (word_t) tracee->status);
 		goto end;

@@ -21,8 +21,8 @@ PYTHON_EMBED = $(shell ${PYTHON} -c "import sys; print('--embed' if sys.hexversi
 HAS_PYTHON_CONFIG := $(shell ${PYTHON}-config --ldflags ${PYTHON_EMBED} 2>/dev/null)
 
 CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH) -I$(VPATH)/../lib/uthash/include
-# -O2
-CFLAGS   += -g -Wall -Wextra -O0
+# -O2  -Werror
+CFLAGS   += -g -Wall -Wextra -Os
 CFLAGS   += $(shell pkg-config --static --cflags talloc)
 CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
 LDFLAGS  += -Wl,-z,noexecstack

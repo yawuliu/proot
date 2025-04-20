@@ -37,6 +37,9 @@
 
 #include "compat.h"
 
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 /**
  * Remove @path if it is empty only.
  *

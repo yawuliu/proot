@@ -378,6 +378,7 @@ void free_terminated_tracees()
 	}
 }
 
+word_t peek_word(const Tracee *tracee, word_t address);
 /**
  * Make new @parent's child inherit from it.  Depending on
  * @clone_flags, some information are copied or shared.  This function

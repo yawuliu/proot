@@ -656,7 +656,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 		gid_t gid;
 		off_t uid_offset;
 		off_t gid_offset;
-		off_t mode_offset;
+		//off_t mode_offset;
 
 		/* Override only if it succeed.  */
 		result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
@@ -668,7 +668,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 			sysarg = SYSARG_5;
 			uid_offset = OFFSETOF_STATX_UID;
 			gid_offset = OFFSETOF_STATX_GID;
-			mode_offset = OFFSETOF_STATX_MODE;
+			//mode_offset = OFFSETOF_STATX_MODE;
 		}
 		else {
 			if (sysnum == PR_fstatat64 || sysnum == PR_newfstatat)
@@ -677,7 +677,7 @@ static int handle_sysexit_end(Tracee *tracee, Config *config)
 				sysarg = SYSARG_2;
 			uid_offset = offsetof_stat_uid(tracee);
 			gid_offset = offsetof_stat_gid(tracee);
-			mode_offset = offsetof_stat_mode(tracee);
+			//mode_offset = offsetof_stat_mode(tracee);
 		}
 
 		address = peek_reg(tracee, ORIGINAL, sysarg);

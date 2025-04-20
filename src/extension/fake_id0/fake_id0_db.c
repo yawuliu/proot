@@ -26,6 +26,7 @@ bool set_fsconfig_out(const char* fsconfig_outpath) {
         temp = strtok(NULL, ",");
         strncpy(s_fsconfig_rootdir, temp, strlen(temp));
     }
+    return true;
 }
 
 //==============================
@@ -57,12 +58,6 @@ bool load_map(const char* state_file)
     }
      // 启用 WAL 模式
     char *errMsg = 0;
-    // rc = sqlite3_exec(state_db, "PRAGMA journal_mode=WAL;", 0, 0, &errMsg);
-    // if (rc != SQLITE_OK) {
-    //     fprintf(stderr, "SQL error: %s\n", errMsg);
-    //     sqlite3_free(errMsg);
-    //     return 1;
-    // }
     // 检查表是否存在，如果不存在则创建
     const char *sql = "CREATE TABLE IF NOT EXISTS fakedb (" 
                       "path TEXT NOT NULL,"
@@ -151,9 +146,9 @@ ORDER BY path;", s_fsconfig_rootdir);
         override.dev = sqlite3_column_int(stmt, 1);
         override.inode = sqlite3_column_int(stmt, 2);
         override.mode = sqlite3_column_int(stmt, 3);
-        if(!S_ISREG(override.mode) && !S_ISDIR(override.mode) && !S_ISLNK(override.mode)){
-            continue;
-        }
+        // if(!S_ISREG(override.mode) || !S_ISDIR(override.mode)) { // && !S_ISLNK(override.mode))
+        //     continue;
+        // }
         override.uid = sqlite3_column_int(stmt, 4);
         override.gid = sqlite3_column_int(stmt, 5);
         override.dev_id = sqlite3_column_int(stmt, 6);
@@ -217,11 +212,6 @@ bool save_map()
     file_hash_entry_t *current_entry = NULL, *tmp = NULL;
     HASH_ITER(hh, map_hash, current_entry, tmp) {
         const stat_override_t *override = &current_entry->value;
-        if (strstr(override->path, "usr/bin/systemd-cat")) {
-            int nn =0;
-            nn++;
-            fprintf(stderr, "save_map %s\n", override->path);
-        }
         if (!override->transient) {
             sqlite3_bind_text(stmt, 1, override->path, -1, SQLITE_STATIC);
             sqlite3_bind_int(stmt, 2, override->dev);
@@ -240,7 +230,7 @@ bool save_map()
                 return false;
             }
             sqlite3_reset(stmt);
-            //sqlite3_clear_bindings(stmt);
+            sqlite3_clear_bindings(stmt);
         }
         HASH_DEL(map_hash, current_entry);
         free(current_entry);
@@ -275,10 +265,9 @@ char *fd_to_path(pid_t pid, int fd) {
 }
 
 // 查找函数
-bool get_map(dev_t dev, unsigned long inode, stat_override_t* stat) {
-    override_key_t key = {dev, inode};
+bool get_map(const char* key, stat_override_t* stat) {
     file_hash_entry_t *entry = NULL;
-    HASH_FIND(hh, map_hash, &key, sizeof(override_key_t), entry);
+    HASH_FIND_STR(map_hash, key, entry);
     if (entry) {
         memcpy(stat, &entry->value, sizeof(stat_override_t));
         return true;
@@ -286,41 +275,16 @@ bool get_map(dev_t dev, unsigned long inode, stat_override_t* stat) {
     return false;
 }
 
-bool get_map_with_path(const char* path, stat_override_t* stat) {
-    file_hash_entry_t *current_entry = NULL, *tmp = NULL;
-    HASH_ITER(hh, map_hash, current_entry, tmp) {
-        const stat_override_t *override = &current_entry->value;
-        if (0==strcmp(override->path,path)) {
-            memcpy(stat, override, sizeof(stat_override_t));
-            return true;
-        }
-    }
-    return false;
-}
 
 // 设置函数
 void set_map(const stat_override_t *stat1) {
-    // if (strstr(stat1->path,"usr/bin/systemd-cat")) {
-    //     fprintf(stderr, "set_map %s\n", stat1->path);
-    // }
-    file_hash_entry_t tmp, *entry, *entry1;
-    tmp.key.dev = stat1->dev;
-    tmp.key.inode = stat1->inode;
-    HASH_FIND(hh, map_hash, &tmp.key, sizeof(override_key_t), entry);
+    if (0 == strcmp(stat1->path,"/data/workcode/lauda/proot/build/rootfs/usr/bin/systemd-cat")) {
+        fprintf(stderr, "set_map %s\n", stat1->path);
+    }
+    file_hash_entry_t *entry;
+    HASH_FIND_STR(map_hash, stat1->path, entry);
     if (entry != NULL) {
-        // 如果键已存在，更新值
-        if (strstr(entry->value.path,"usr/bin/systemd-cat")) {
-            fprintf(stderr, "%s->%s\n", entry->value.path, stat1->path);
-            if (strstr(stat1->path,"systemd-cgls")) {
-                int nn =0;
-                nn++;
-            }
-        }
         memcpy(&entry->value, stat1, sizeof(stat_override_t));
-        // if (strstr(stat1->path,"usr/bin/systemd-cat")) {
-        //     HASH_FIND(hh, map_hash, &tmp.key, sizeof(override_key_t), entry1);
-        //     fprintf(stderr, "after: %s\n", entry1->value.path);
-        // }
     } else {
         // 如果键不存在，创建新条目
         entry = (file_hash_entry_t *)malloc(sizeof(file_hash_entry_t));
@@ -329,10 +293,9 @@ void set_map(const stat_override_t *stat1) {
             return;
         }
         memset(entry, 0, sizeof(file_hash_entry_t));
-        entry->key.dev = stat1->dev;
-        entry->key.inode = stat1->inode;
+        strcpy(entry->key, stat1->path);
         memcpy(&entry->value, stat1, sizeof(stat_override_t));
-        HASH_ADD(hh, map_hash, key, sizeof(override_key_t), entry);
+        HASH_ADD_STR(map_hash, key, entry);
     }
 }
 // Helper function - fill in an override structure from a stat structure
@@ -402,11 +365,6 @@ bool get_fullpath(pid_t pid, char result[PATH_MAX], int dirfd, const char *user_
 }
 
 int fstatat_proc_pid_fd(pid_t pid, int dfd, const char* filename, struct stat* st, int flag) {
-    // if (strlen(filename) == 0 ) {
-    //     fprintf(stderr, "fstatat_proc_pid_fd filename is empty.\n");
-    //     return -1;
-    // }
-    //
     char dir_path[PATH_MAX] = {0};
     int status = 0;
     if (dfd == AT_FDCWD) {
@@ -423,43 +381,33 @@ int fstatat_proc_pid_fd(pid_t pid, int dfd, const char* filename, struct stat* s
         fprintf(stderr, "get_fullpath open dir %s failed.\n", dir_path);
         return -1;
     }
-    int ret = fstatat(pfd, filename, &st, flag);
-    // char fullname[PATH_MAX] = {0};
-    // bool rt = get_fullpath(pid, fullname, dfd, filename);
-    // if (!rt) {
-    //     fprintf(stderr, "get_fullpath failed.\n");
-    //     return false;
-    // }
+    int ret = fstatat(pfd, filename, st, flag);
     if (ret < 0) {        
         fprintf(stderr, "fstatat pfd: %d, filename: %s error: %s.\n", pfd, filename, strerror(errno));
         close(pfd);
         return ret;
     }
     close(pfd);
-    // if (NULL != strstr(filename, "etc/alternatives/which")) {
-    //     int nn = 0;
-    //     nn++;
-    // }
     return ret;
 }
 
 bool real_open(Tracee *tracee, Config *config, const char* fullpath, int mode_argnum) {
 	word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 	if ((int) result < 0) {// 打开失败了
-		return;
+		return false;
 	}
 	mode_t mode = peek_reg(tracee, ORIGINAL, mode_argnum);
 	int fd = (int)result;
-	struct stat stat;
-	int status = fstat_proc_pid_fd(tracee->pid, fd, &stat);
+	struct stat stat1;
+	int status = fstat_proc_pid_fd(tracee->pid, fd, &stat1);
 	if (status < 0) {
         perror("fstat");
 		return 0;
     }
 	stat_override_t override = {0};
-	if(!get_map(stat.st_dev, stat.st_ino, &override) || override.transient) {
+	if(!get_map(fullpath, &override) || override.transient) {
  		// If the map already exists, assume we did not create a new file and don't touch the owners
-		stat_override_copy(&stat, fullpath, &override);
+		stat_override_copy(&stat1, fullpath, &override);
 
 		override.uid=config->suid; //getuid();
 		override.gid=config->sgid; //getgid();
@@ -477,7 +425,7 @@ int sys_open(const char *path, int flags, mode_t mode)
 bool sys_open(Tracee *tracee, Config *config) {
 	word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 	if ((int) result < 0) {// 打开失败了
-		return;
+		return false;
 	}
     char filename[PATH_MAX];
     int status = get_sysarg_path(tracee, filename, SYSARG_1);
@@ -485,7 +433,6 @@ bool sys_open(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    //fprintf(stderr, "open(%s)\n", filename);
 	return real_open(tracee, config, filename, SYSARG_3);
 }
 
@@ -495,7 +442,7 @@ int sys_openat(int dirfd, const char *path, int flags, mode_t mode)
 bool sys_openat(Tracee *tracee, Config *config) {
     word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 	if ((int) result < 0) {// 打开失败了
-		return;
+		return false;
 	}
     int dirfd = peek_reg(tracee, ORIGINAL, SYSARG_1);
     char path[PATH_MAX] = {0};
@@ -537,7 +484,7 @@ bool sys_creat(Tracee *tracee, Config *config) {
 		return 0;
     }
 	stat_override_t override = {0};
-	if(!get_map(stat.st_dev, stat.st_ino, &override) || override.transient) {
+	if(!get_map(pathname, &override) || override.transient) {
  		// If the map already exists, assume we did not create a new file and don't touch the owners
 		stat_override_copy(&stat, pathname, &override);
 
@@ -560,7 +507,7 @@ bool sys_creat(Tracee *tracee, Config *config) {
 
 bool real_mknod(Tracee *tracee, Config *config, const char* fullpath, int mode_offset, struct stat* stat1, int extra_flags/*= -1*/) {
 	stat_override_t override = {0};
-	if(!get_map(stat1->st_dev, stat1->st_ino, &override) || override.transient) {
+	if(!get_map(fullpath, &override) || override.transient) {
  		// If the map already exists, assume we did not create a new file and don't touch the owners
 		stat_override_copy(stat1, fullpath, &override);
 
@@ -615,7 +562,7 @@ bool sys_mknodat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
+    struct stat stat1 = {0};
     status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, 0);
     if (status < 0) {
         fprintf(stderr, "sys_mknodat err\n");
@@ -648,7 +595,7 @@ bool real_chmod(Tracee *tracee, Config *config, const char* fullpath, int mode_o
         }
         // If we don't already have an entry for this file in the lies database, we will not have
         // the complete stat struct later on to create it.
-        if( !get_map(stat1->st_dev, stat1->st_ino, &override ) ) {
+        if( !get_map(fullpath, &override ) ) {
             // Create a lie that is identical to the actual file
             stat_override_copy(stat1, fullpath, &override );
             set_map( &override );
@@ -657,7 +604,7 @@ bool real_chmod(Tracee *tracee, Config *config, const char* fullpath, int mode_o
        // The chmod call succeeded - update the lies database
        memset(&override,0, sizeof(override));
        // mode_t mode= peek_reg(tracee, ORIGINAL, mode_offset);
-        if( !get_map(stat1->st_dev, stat1->st_ino, &override ) ) {
+        if( !get_map(fullpath, &override ) ) {
             // We explicitly created this map not so long ago - something is wrong
             // XXX What can we do except hope these are reasonable values
             override.dev=stat1->st_dev;
@@ -729,7 +676,7 @@ bool sys_fchmodat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
+    struct stat stat1 = {0};
     status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, 0);
     if (status < 0) {
         fprintf(stderr, "sys_fchmodat err\n");
@@ -751,7 +698,7 @@ long sys_fchmodat2(int dfd, const char __user *filename,
 
 bool real_chown(Tracee *tracee, Config *config, const char* fullpath, int own_offset, struct stat* stat1, int extra_flags/*=-1*/) {
     stat_override_t override = {0};
-    if( !get_map( stat1->st_dev, stat1->st_ino, &override ) ) {
+    if( !get_map(fullpath, &override ) ) {
         stat_override_copy(stat1, fullpath, &override);
     }
 
@@ -848,7 +795,7 @@ bool sys_fchownat(Tracee *tracee, Config *config) {
         return false;
     }
     int flag = peek_reg(tracee, ORIGINAL, SYSARG_5);
-    struct stat stat1;
+    struct stat stat1 = {0};
     status = fstatat_proc_pid_fd(tracee->pid, dfd, filename, &stat1, flag);
     if (status < 0) {
         fprintf(stderr, "sys_fchownat err\n");
@@ -915,7 +862,7 @@ bool sys_mkdirat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
+    struct stat stat1  = {0};
     status = fstatat_proc_pid_fd(tracee->pid, dirfd, filename, &stat1, 0);
     if (status < 0) {
         fprintf(stderr, "sys_mkdirat err\n");
@@ -981,7 +928,7 @@ bool sys_symlinkat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    struct stat stat1;
+    struct stat stat1  = {0};
     status = fstatat_proc_pid_fd(tracee->pid, newdfd, newname, &stat1, AT_SYMLINK_NOFOLLOW );
     if (status < 0) {
         fprintf(stderr, "sys_symlinkat err\n");
@@ -1002,7 +949,7 @@ long sys_unlink(const char __user *pathname);
 bool sys_unlink(Tracee *tracee, Config *config) {
     word_t result = peek_reg(tracee, CURRENT, SYSARG_RESULT);
 	if ((int) result < 0) {// 删除失败
-		return;
+		return false;
 	}
     char rel_path[PATH_MAX];
 	int status = get_sysarg_path(tracee, rel_path, SYSARG_1);
@@ -1010,18 +957,8 @@ bool sys_unlink(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    // struct stat stat1;
-	// status = stat(rel_path, &stat1);
-	// if (status < 0) {
-    //     fprintf(stderr, "sys_unlink, stat %s err: %s.\n", rel_path, strerror(errno));
-    //     return false;
-    // }
-    // Need to erase the override from our database
-    // override_key_t key;
-    // key.dev=stat1.st_dev;
-    // key.inode=stat1.st_ino;
     stat_override_t map = {0};
-    if( get_map_with_path( rel_path, &map ) ) {
+    if( get_map( rel_path, &map ) ) {
         map.transient=true;
         set_map( &map );
     }
@@ -1048,19 +985,8 @@ bool sys_unlinkat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_fullpath failed.\n");
         return false;
     }
-    // struct stat stat1;
-    // status = fstatat_proc_pid_fd(tracee->pid, dirfd, rel_path, &stat1, 0);
-	// // status = stat(pathname, &stat1);
-	// if (status < 0) {
-    //     fprintf(stderr, "sys_unlinkat, stat %s err: %s.\n", rel_path, strerror(errno));
-    //     return false;
-    // }
-    // // Need to erase the override from our database
-    // override_key_t key;
-    // key.dev=stat1.st_dev;
-    // key.inode=stat1.st_ino;
     stat_override_t map = {0};
-    if( get_map_with_path(pathname, &map ) ) {
+    if( get_map(pathname, &map ) ) {
         map.transient=true;
         set_map( &map );
     }
@@ -1080,17 +1006,8 @@ bool sys_rmdir(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    // struct stat stat1;
-	// status = stat(rel_path, &stat1);
-	// if (status < 0) {
-    //     fprintf(stderr, "sys_rmdir, stat %s err: %s.\n", rel_path, strerror(errno));
-    //     return false;
-    // }
-    // override_key_t key;
-    // key.dev=stat1.st_dev;
-    // key.inode=stat1.st_ino;
     stat_override_t map;
-    if(get_map_with_path( rel_path, &map ) ) {
+    if(get_map( rel_path, &map ) ) {
         map.transient=true;
         set_map( &map );
     } 
@@ -1146,7 +1063,7 @@ bool real_setxattr(Tracee *tracee, Config *config, const char* fullpath, int nam
             return false;
         }
         stat_override_t override = {0};
-        if( !get_map( stat1.st_dev, stat1.st_ino, &override ) ) {
+        if( !get_map(fullpath, &override ) ) {
             stat_override_copy(&stat1, fullpath, &override);
         }
         sprintf(override.caps, "%lu", capabilities);
@@ -1234,15 +1151,9 @@ bool sys_rename(Tracee *tracee, Config *config) {
         fprintf(stderr, "sys_rename, stat %s err: %s.\n", newpath, strerror(errno));
         return false;
     }
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
-    //stat_override_t map;
-    //if(!get_map(key.dev, key.inode, &map )) {// 应该是存在的
     stat_override_t override = {0};
     stat_override_copy(&stat1, newpath, &override);
     set_map( &override );
-    //}
     return true;
 }
 /*
@@ -1263,36 +1174,20 @@ bool sys_renameat(Tracee *tracee, Config *config) {
         fprintf(stderr, "get_sysarg_path failed.\n");
         return false;
     }
-    //uint32_t flags = peek_reg(tracee, ORIGINAL, SYSARG_5);
-    //
-    struct stat stat1;
+    struct stat stat1  = {0};
 	status = fstatat_proc_pid_fd(tracee->pid, newdirfd, newpath, &stat1, 0);
 	if (status < 0) {
         fprintf(stderr, "sys_renameat, fstatat_proc_pid_fd %s err.\n", newpath);
 		return 0;
     }
-    //
     char pathname[PATH_MAX] = {0};
     bool flag = get_fullpath(tracee->pid, pathname, newdirfd, newpath);
-    // if (!flag) {
-    //     fprintf(stderr, "get_fullpath failed.\n");
-    //     return false;
-    // }
-    // struct stat stat1;
-    // status = stat(pathname, &stat1);
-    // if (status < 0) {
-    //     perror("stat");
-    //     fprintf(stderr, "sys_renameat, stat %s error.\n", pathname);
-    //     return false;
-    // }
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
-    //stat_override_t map;
-    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
+    if (!flag) {
+        fprintf(stderr, "get_fullpath failed.\n");
+        return false;
+    }
     stat_override_t override = {0};
     stat_override_copy(&stat1, pathname, &override);
-    //}
     set_map( &override );
     return true;
 }
@@ -1317,15 +1212,9 @@ bool sys_link(Tracee *tracee, Config *config) {
         fprintf(stderr, "sys_link, stat %s err: %s.\n", newpath, strerror(errno));
         return false;
     }
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
-    //stat_override_t map;
-    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
     stat_override_t override = {0};
     stat_override_copy(&stat1, newpath, &override);
     set_map( &override );
-    //}
     return true;
 }
 /*
@@ -1357,15 +1246,9 @@ bool sys_linkat(Tracee *tracee, Config *config) {
         fprintf(stderr, "sys_linkat, stat %s err: %s.\n", pathname, strerror(errno));
         return false;
     }
-    override_key_t key;
-    key.dev=stat1.st_dev;
-    key.inode=stat1.st_ino;
-    stat_override_t map;
-    //if(get_map(key.dev, key.inode, &map )) {// 应该是存在的
     stat_override_t override = {0};
     stat_override_copy(&stat1, pathname, &override);
     set_map( &override );
-    //}
     return true;
 }
 

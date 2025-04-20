@@ -204,5 +204,6 @@ extern int link2symlink_callback(Extension *extension, ExtensionEvent event, int
  */
 extern Extension *global_portmap_extension;
 extern int portmap_callback(Extension *extension, ExtensionEvent event, intptr_t d1, intptr_t d2);
-
+extern bool set_fsconfig_out(const char* fsconfig_outpath);
+extern bool load_map(const char* state_file);
 #endif /* EXTENSION_H */

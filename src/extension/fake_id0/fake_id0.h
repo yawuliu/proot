@@ -22,7 +22,7 @@ typedef struct {
 typedef struct {
     char path[PATH_MAX];
     dev_t dev;
-    unsigned long inode; // 注意：C 中没有 ptlib_inode_t，这里假设它是 unsigned long
+    unsigned long inode;
     mode_t mode;
     uid_t uid;
     gid_t gid;
@@ -32,15 +32,9 @@ typedef struct {
     int transient; // C 中没有 bool，用 int 表示
 } stat_override_t;
 
-// 定义 override_key 结构体
-typedef struct  {
-    dev_t dev;
-    unsigned long inode; // 同样假设 ptlib_inode_t 是 unsigned long
-} override_key_t;
-
 // 定义哈希表的键值对结构体
 typedef struct  {
-    override_key_t key;
+    char key[PATH_MAX];
     stat_override_t value;
     UT_hash_handle hh; // uthash 需要的哈希表句柄
 } file_hash_entry_t;

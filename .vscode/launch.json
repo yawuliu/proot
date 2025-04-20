@@ -7,6 +7,9 @@
         "request": "launch",
         "program": "${workspaceFolder}/src/proot", // Replace with your executable path
         "cwd": "${workspaceFolder}/build", // Working directory on the remote machine
+        "sourceFileMap": {
+          ".": "${workspaceFolder}/src/"
+        },
         "linux": {
           "args": ["-r", "${workspaceFolder}/build/rootfs", "-0", "-w","/",
           "-f", "${workspaceFolder}/fsconfig.txt,${workspaceFolder}/build/rootfs",
@@ -43,6 +46,7 @@
         "visualizerFile": "${workspaceFolder}/my.natvis",
         "showDisplayString": true,
         "preLaunchTask": "build", // Optional: Name of a build task in tasks.json
+        // "postDebugTask": "Terminate All Tasks",
         "stopAtEntry": false,
         "internalConsoleOptions": "openOnSessionStart",
         "MIMode": "gdb", // Or 'lldb' if you are using LLDB

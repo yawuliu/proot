@@ -48,6 +48,9 @@
 
 #define P(a) PROGRAM_FIELD(load_info->elf_header, *program_header, a)
 
+
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+
 /**
  * Add @program_header (type PT_LOAD) to @load_info->mappings.  This
  * function returns -errno if an error occured, otherwise it returns
