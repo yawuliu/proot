@@ -23,11 +23,13 @@ HAS_PYTHON_CONFIG := $(shell ${PYTHON}-config --ldflags ${PYTHON_EMBED} 2>/dev/n
 CPPFLAGS += -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -I. -I$(VPATH) -I$(VPATH)/../lib/uthash/include
 # -O2  -Werror
 CFLAGS   += -g -Wall -Wextra -Os
-CFLAGS   += $(shell pkg-config --static --cflags talloc)
-CFLAGS   += $(shell pkg-config --static --cflags sqlite3)
+CFLAGS   += 
+CFLAGS   += 
 LDFLAGS  += -Wl,-z,noexecstack
-LDFLAGS  += -Wl,-Bstatic $(shell pkg-config --static --libs talloc) -Wl,-Bdynamic
-LDFLAGS  += -Wl,-Bstatic $(shell pkg-config --libs sqlite3) -Wl,-Bdynamic -lm -ldl -lz -lpthread
+LDFLAGS  += -Wl,-Bstatic -L$(VPATH)/../lib/talloc -ltalloc -Wl,-Bdynamic
+CPPFLAGS += -I$(VPATH)/../lib/talloc/include
+LDFLAGS  += -Wl,-Bstatic -L$(VPATH)/../lib/sqlite3 -lsqlite3 -Wl,-Bdynamic -lm -ldl -lz -lpthread
+CPPFLAGS += -I$(VPATH)/../lib/sqlite3/include
 # -L/lib/x86_64-linux-gnu -Wl,-Bstatic -ltalloc -lsqlite3
 #-ltalloc $(shell pkg-config --static --libs talloc)
 #$(shell pkg-config --static --libs sqlite3) # -lsqlite3 -lm -ldl -lz -lpthread

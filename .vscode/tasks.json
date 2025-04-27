@@ -2,6 +2,13 @@
     "tasks": [
         {
             "type": "shell",
+            "label": "build_it",
+            "command": "make",
+            "args": ["-C","src","proot","-j8"],
+            "problemMatcher": []
+        },
+        {
+            "type": "shell",
             "label": "build",
             "command": "make",
             "args": ["-C","src","proot","-j8"],

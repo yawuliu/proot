@@ -39,6 +39,7 @@
         "system_error": "c",
         "tuple": "c",
         "type_traits": "c",
-        "dirent.h": "c"
+        "dirent.h": "c",
+        "prctl.h": "c"
     }
 }

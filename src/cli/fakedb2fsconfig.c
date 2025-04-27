@@ -95,9 +95,9 @@ ORDER BY path;", s_fsconfig_rootdir);
         override.dev = sqlite3_column_int(stmt, 1);
         override.inode = sqlite3_column_int(stmt, 2);
         override.mode = sqlite3_column_int(stmt, 3);
-        if(!S_ISREG(override.mode) && !S_ISDIR(override.mode) && !S_ISLNK(override.mode)){
-            continue;
-        }
+        // if(!S_ISREG(override.mode) && !S_ISDIR(override.mode) && !S_ISLNK(override.mode)){
+        //     continue;
+        // }
         override.uid = sqlite3_column_int(stmt, 4);
         override.gid = sqlite3_column_int(stmt, 5);
         override.dev_id = sqlite3_column_int(stmt, 6);
@@ -126,7 +126,7 @@ ORDER BY path;", s_fsconfig_rootdir);
         }
 
         if (tmp)
-            fprintf(fp,"%s %d %d %o capabilities=0x%x\n", tmp, override.uid, override.gid, override.mode&0777, 0);
+            fprintf(fp,"%s %d %d %o capabilities=0x%lx\n", tmp, override.uid, override.gid, override.mode&0777, capabilities);
     }
     fclose(fp);
     sqlite3_finalize(stmt);

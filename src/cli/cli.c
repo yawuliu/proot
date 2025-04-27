@@ -31,7 +31,9 @@
 #include <unistd.h>        /* getpid(2),  */
 #include <errno.h>         /* errno(3), */
 #include <limits.h>        /* INT_MAX, */
-
+#include <sys/resource.h>
+#include <linux/prctl.h>  /* Definition of PR_* constants */
+#include <sys/prctl.h>
 /* execinfo.h is GNU extension, disable it not using glibc */
 #if defined(__GLIBC__)
 #include <execinfo.h>      /* backtrace_symbols(3), */
@@ -451,11 +453,23 @@ static int parse_config(Tracee *tracee, size_t argc, char *const argv[])
 
 bool exit_failure = true;
 
+void enable_coredump() {
+	// core dumps may be disallowed by parent of this process; change that
+	struct rlimit limit = {
+		.rlim_cur = RLIM_INFINITY,
+		.rlim_max = RLIM_INFINITY
+	};
+	prctl(PR_SET_DUMPABLE, 1L);
+
+	(void) setrlimit(RLIMIT_CORE, &limit);
+}
+
 int main(int argc, char *const argv[])
 {
 	Tracee *tracee;
 	int status;
 
+	enable_coredump();
 	/* Configure the memory allocator.  */
 	talloc_enable_leak_report();
 
